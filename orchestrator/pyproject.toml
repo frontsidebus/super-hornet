@@ -27,9 +27,26 @@ dev = [
     "pytest-asyncio>=0.24",
     "ruff>=0.6",
 ]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-mock>=3.14",
+    "respx>=0.21",
+]
 
 [project.scripts]
 merlin = "orchestrator.main:run"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: integration tests (require external services or network)",
+    "docker: tests that require Docker containers running",
+    "network: tests that require internet access",
+    "slow: tests that take a long time to run",
+]
+addopts = "-m 'not integration'"
 
 [tool.ruff]
 target-version = "py311"
