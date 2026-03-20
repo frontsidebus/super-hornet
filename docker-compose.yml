@@ -19,7 +19,7 @@ services:
     image: onerahmet/openai-whisper-asr-webservice:latest
     container_name: merlin-whisper
     ports:
-      - "9000:9000"
+      - "9090:9000"
     environment:
       - ASR_MODEL=${WHISPER_MODEL:-base}
       - ASR_ENGINE=openai_whisper

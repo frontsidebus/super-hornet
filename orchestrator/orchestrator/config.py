@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     )
 
     whisper_url: str = Field(
-        default="http://localhost:9000",
+        default="http://localhost:9090",
         description="URL of the local Whisper ASR HTTP service",
     )
 
