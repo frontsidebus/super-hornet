@@ -733,9 +733,9 @@ async def _send_tts_chunk(ws: WebSocket, text: str) -> None:
                 "text": clean_text,
                 "model_id": settings.elevenlabs_model_id,
                 "voice_settings": {
-                    "stability": 0.5,
-                    "similarity_boost": 0.75,
-                    "style": 0.3,
+                    "stability": 0.75,
+                    "similarity_boost": 0.80,
+                    "style": 0.15,
                 },
             },
         )

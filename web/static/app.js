@@ -556,10 +556,9 @@
   function bargeIn() {
     if (!state.isPlayingAudio && state.audioQueue.length === 0) return;
 
-    // Stop current audio
+    // Stop current Web Audio source
     if (state.currentAudio) {
-      state.currentAudio.pause();
-      state.currentAudio.src = '';
+      try { state.currentAudio.stop(); } catch (_) { /* may already be stopped */ }
       state.currentAudio = null;
     }
 
@@ -1018,8 +1017,40 @@
   });
 
   // ═══════════════════════════════════════════════════════
-  //  AUDIO PLAYBACK
+  //  AUDIO PLAYBACK (with volume normalization)
   // ═══════════════════════════════════════════════════════
+
+  // Shared AudioContext for decoding and normalized playback
+  let _playbackCtx = null;
+  let _playbackGain = null;
+  const TARGET_RMS = 0.18; // Target RMS level for normalization
+
+  function getPlaybackContext() {
+    if (!_playbackCtx || _playbackCtx.state === 'closed') {
+      _playbackCtx = new (window.AudioContext || window.webkitAudioContext)();
+      _playbackGain = _playbackCtx.createGain();
+      _playbackGain.gain.value = state.ttsVolume;
+      _playbackGain.connect(_playbackCtx.destination);
+    }
+    if (_playbackCtx.state === 'suspended') {
+      _playbackCtx.resume();
+    }
+    return _playbackCtx;
+  }
+
+  function measureRMS(audioBuffer) {
+    // Measure RMS across all channels
+    let sumSq = 0;
+    let count = 0;
+    for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+      const data = audioBuffer.getChannelData(ch);
+      for (let i = 0; i < data.length; i++) {
+        sumSq += data[i] * data[i];
+      }
+      count += data.length;
+    }
+    return Math.sqrt(sumSq / (count || 1));
+  }
 
   function queueAudioBlob(blob) {
     state.audioQueue.push(blob);
@@ -1051,36 +1082,41 @@
     setVoiceMode('speaking');
 
     const blob = state.audioQueue.shift();
-    const url = URL.createObjectURL(blob);
-
-    // Use a fresh Audio element per clip to chain smoothly
-    const audio = new Audio(url);
-    audio.volume = state.ttsVolume;
-    state.currentAudio = audio;
-
-    // Pre-buffer: start loading immediately
-    audio.preload = 'auto';
-
-    let advanced = false;
-    function advance() {
-      if (advanced) return;
-      advanced = true;
-      URL.revokeObjectURL(url);
-      // Chain to next clip immediately for gapless playback
-      playNextAudio();
-    }
-
-    audio.addEventListener('ended', advance, { once: true });
-    audio.addEventListener('error', () => {
-      console.warn('Audio element error');
-      advance();
-    }, { once: true });
 
     try {
-      await audio.play();
+      const ctx = getPlaybackContext();
+      const arrayBuf = await blob.arrayBuffer();
+      const audioBuffer = await ctx.decodeAudioData(arrayBuf);
+
+      // Measure RMS and compute normalization gain
+      const rms = measureRMS(audioBuffer);
+      const gain = rms > 0.001 ? TARGET_RMS / rms : 1.0;
+      // Clamp gain to avoid blowing out quiet clips or clipping loud ones
+      const clampedGain = Math.min(Math.max(gain, 0.5), 4.0);
+
+      // Update the master volume from slider
+      _playbackGain.gain.value = state.ttsVolume;
+
+      // Create a per-clip gain node for normalization
+      const clipGain = ctx.createGain();
+      clipGain.gain.value = clampedGain;
+      clipGain.connect(_playbackGain);
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(clipGain);
+
+      state.currentAudio = source;
+
+      source.addEventListener('ended', () => {
+        clipGain.disconnect();
+        playNextAudio();
+      }, { once: true });
+
+      source.start(0);
     } catch (err) {
-      console.warn('Audio playback error:', err);
-      advance();
+      console.warn('Audio decode/playback error:', err);
+      playNextAudio();
     }
   }
 
@@ -1089,9 +1125,9 @@
   if (dom.ttsVolume) {
     dom.ttsVolume.addEventListener('input', (e) => {
       state.ttsVolume = parseFloat(e.target.value);
-      // Apply to currently playing audio immediately
-      if (state.currentAudio) {
-        state.currentAudio.volume = state.ttsVolume;
+      // Apply to master gain node immediately
+      if (_playbackGain) {
+        _playbackGain.gain.value = state.ttsVolume;
       }
     });
   }
