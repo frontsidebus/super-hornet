@@ -115,7 +115,7 @@ async def lifespan(app: FastAPI):
         context_store=context_store,
     )
 
-    logger.info("MERLIN web server ready on port 3000")
+    logger.info("MERLIN web server ready on port 3838")
     yield
 
     # Shutdown
@@ -131,7 +131,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="MERLIN AI Co-Pilot",
     description="Web backend for the MERLIN flight simulator co-pilot",
-    version="0.1.0",
+    version="1.0.0",
     lifespan=lifespan,
 )
 

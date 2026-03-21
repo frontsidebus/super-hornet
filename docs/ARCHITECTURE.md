@@ -23,7 +23,7 @@ Technical deep-dive into MERLIN's system design, component responsibilities, dat
 +-----------------------------------------------------------------------------------+
 |                                                                                   |
 |                     FastAPI Web Server (web/server.py)                             |
-|                     http://localhost:8081                                          |
+|                     http://localhost:3838                                          |
 |                                                                                   |
 |   +----------------+    +------------------+    +--------------+                  |
 |   |  SimConnect     |    |  Claude Client   |    |  Flight      |                  |
@@ -81,7 +81,7 @@ MSFS 2024
   -> SimConnectManager (C#)
        Event-driven message pump: EventWaitHandle signals when data ready
        Dedicated pump thread calls ReceiveMessage() on signal
-       High-frequency data (30 Hz): position, attitude, speeds
+       High-frequency data (per sim frame, when changed): position, attitude, speeds
        Low-frequency data (1 Hz): autopilot, radios, fuel, surfaces, environment, engines
   -> Assembles SimState object (thread-safe, locked)
   -> Fires StateUpdated event
@@ -110,7 +110,8 @@ Browser microphone
   -> POST to Whisper HTTP API (localhost:9090/asr)
        Model: small
        initial_prompt: aviation vocabulary (ATIS, METAR, squawk, NATO phonetic, ...)
-       Retry with exponential backoff (up to 3 attempts)
+       Note: the standalone WhisperClient retries with exponential backoff;
+       the web server's transcription path does not retry
   -> TranscriptionResult (text, confidence, language, duration)
   -> ClaudeClient conversation loop:
        1. Build system prompt: persona + phase style + telemetry + RAG context
@@ -227,7 +228,7 @@ Barge-in: new user input cancels in-flight Claude stream + TTS immediately
 
 **Decision:** The `SimConnectClient` tracks previous state and only fires update callbacks when telemetry values actually change.
 
-**Rationale:** At 30 Hz, most telemetry frames are identical to the previous frame (especially for slowly-changing parameters). Delta detection reduces unnecessary downstream processing, logging, and WebSocket traffic to browser clients.
+**Rationale:** At sim-frame rate, most telemetry frames are identical to the previous frame (especially for slowly-changing parameters). Delta detection reduces unnecessary downstream processing, logging, and WebSocket traffic to browser clients.
 
 ---
 
@@ -241,7 +242,7 @@ Barge-in: new user input cancels in-flight Claude stream + TTS immediately
 |                                                    |
 |   +-----------+   +-----------+   +------------+  |
 |   |  whisper  |   | chromadb  |   |orchestrator|  |
-|   |  :9090    |   |  :8000    |   |   :8081    |  |
+|   |  :9090    |   |  :8000    |   |   :3838    |  |
 |   +-----------+   +-----------+   +------------+  |
 |                                          |         |
 +------------------------------------------|--------+
@@ -265,7 +266,7 @@ Barge-in: new user input cancels in-flight Claude stream + TTS immediately
 - All Docker services share the `merlin` bridge network and communicate by service name (`whisper`, `chromadb`).
 - The orchestrator container reaches the SimConnect bridge on the Windows host via `host.docker.internal`, which Docker Desktop maps to the host machine's IP.
 - The `extra_hosts` directive ensures `host.docker.internal` resolves correctly even on non-Docker-Desktop setups.
-- Ports 9090 (Whisper), 8000 (ChromaDB), and 8081 (orchestrator/web) are published to the host for debugging and native access.
+- Ports 9090 (Whisper), 8000 (ChromaDB), and 3838 (orchestrator/web) are published to the host for debugging and native access.
 - **WSL2 note:** When running outside Docker, use `$(hostname).local` or the Windows host IP to reach the SimConnect bridge.
 
 ### Volume Mounts and Data Persistence

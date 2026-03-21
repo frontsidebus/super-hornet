@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dynamic token budgeting (short/normal/briefing response lengths)
 - Push-to-talk (spacebar) and barge-in interruption support
 - ChromaDB RAG store for aircraft manuals with query caching
-- Flight phase detection state machine (preflight through landing)
+- Flight phase detection state machine (preflight through landed)
 - Health monitoring for all subsystems with graceful degradation
 - Connection quality indicator and auto-reconnect with exponential backoff
 - Delta detection to skip duplicate telemetry messages

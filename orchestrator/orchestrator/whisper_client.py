@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 OutputFormat = Literal["text", "json", "verbose_json", "srt", "vtt"]
 
 # Defaults
-_DEFAULT_WHISPER_URL = "http://localhost:9000"
+_DEFAULT_WHISPER_URL = "http://localhost:9090"
 _DEFAULT_TIMEOUT = 30.0
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = 1.5  # seconds, multiplied by attempt number
@@ -47,7 +47,7 @@ class WhisperClient:
     """HTTP client for a local Whisper ASR service.
 
     Args:
-        base_url: Root URL of the Whisper service (e.g. http://whisper:9000).
+        base_url: Root URL of the Whisper service (e.g. http://whisper:9090).
         timeout: Request timeout in seconds.
         language: Optional language hint (ISO 639-1 code, e.g. "en").
         initial_prompt: Optional prompt to bias recognition toward specific vocabulary.

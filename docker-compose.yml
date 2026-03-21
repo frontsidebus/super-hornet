@@ -21,7 +21,7 @@ services:
     ports:
       - "9090:9000"
     environment:
-      - ASR_MODEL=${WHISPER_MODEL:-small}
+      - ASR_MODEL=${WHISPER_MODEL:-medium}
       - ASR_ENGINE=openai_whisper
     volumes:
       - whisper_cache:/root/.cache/whisper

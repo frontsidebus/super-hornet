@@ -69,17 +69,16 @@ The SimConnect bridge requires `Microsoft.FlightSimulator.SimConnect.dll` from t
 1. Launch MSFS 2024.
 2. Go to **Options > General > Developers** and enable **Developer Mode**.
 3. In the Developer menu bar, click **Help > SDK Installer**.
-4. Run the installer. Typical install paths:
-   - `C:\MSFS SDK\`
-   - `C:\MSFS2024SDK\`
+4. Run the installer. The default install path is:
+   - `C:\MSFS 2024 SDK\`
 5. Confirm this file exists:
    ```
-   C:\MSFS SDK\SimConnect SDK\lib\managed\Microsoft.FlightSimulator.SimConnect.dll
+   C:\MSFS 2024 SDK\SimConnect SDK\lib\managed\Microsoft.FlightSimulator.SimConnect.dll
    ```
 
 **Important:** After the SDK install, run the **SimConnect MSI installer** located at:
 ```
-C:\MSFS SDK\SimConnect SDK\lib\SimConnect.msi
+C:\MSFS 2024 SDK\SimConnect SDK\lib\SimConnect.msi
 ```
 This registers the SimConnect COM components. You may need to re-run this MSI after major MSFS updates.
 
@@ -120,7 +119,7 @@ This starts:
 |---|---|---|---|
 | Whisper | `merlin-whisper` | 9090 | Local speech-to-text (OpenAI-compatible API) |
 | ChromaDB | `merlin-chromadb` | 8000 | Vector store for RAG document retrieval |
-| Orchestrator | `merlin-orchestrator` | 8081 | Web server + MERLIN brain |
+| Orchestrator | `merlin-orchestrator` | 3838 | Web server + MERLIN brain |
 
 **First startup downloads the Whisper `small` model (~500 MB).** This can take several minutes. Monitor progress:
 
@@ -156,7 +155,9 @@ The bridge connects to MSFS and streams telemetry over WebSocket on port 8080. I
 
 ### 8. Open the Browser UI
 
-Navigate to [http://localhost:8081](http://localhost:8081). The cockpit display will show live telemetry once the bridge connects. Use the chat panel or microphone button to interact with MERLIN.
+Navigate to [http://localhost:3838](http://localhost:3838). The cockpit display will show live telemetry once the bridge connects. Use the chat panel or microphone button to interact with MERLIN.
+
+> **Note:** Docker Compose maps the orchestrator to port 3838. When running locally via `python run.py` (outside Docker), the dev server also defaults to port 3838.
 
 ---
 
@@ -193,7 +194,7 @@ The Docker Compose file already configures the orchestrator container to use `ho
 **Symptom:** `COMException` or `Could not connect to SimConnect` when starting the bridge.
 
 - Ensure MSFS 2024 is running before starting the bridge.
-- Run (or re-run) the SimConnect MSI installer: `C:\MSFS SDK\SimConnect SDK\lib\SimConnect.msi`. This is required after MSFS updates that reset COM registration.
+- Run (or re-run) the SimConnect MSI installer: `C:\MSFS 2024 SDK\SimConnect SDK\lib\SimConnect.msi`. This is required after MSFS updates that reset COM registration.
 - Verify Developer Mode is enabled in MSFS (Options > General > Developers).
 - Confirm the DLL path in `SimConnectBridge.csproj` is correct.
 - The bridge must run as a native Windows process, not inside WSL or Docker.

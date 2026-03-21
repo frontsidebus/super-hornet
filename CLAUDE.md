@@ -116,7 +116,7 @@ cd web
 # Install dependencies (or use the orchestrator venv)
 pip install -r requirements.txt
 
-# Run the FastAPI dev server (defaults to http://localhost:8081)
+# Run the FastAPI dev server (defaults to http://localhost:3838)
 python run.py
 ```
 
@@ -196,7 +196,7 @@ SIMCONNECT_WS_HOST=$(hostname).local       # WSL2 native
 
 5. **Claude tool use for actions** -- The orchestrator defines tools (`get_sim_state`, `lookup_airport`, `search_manual`, `get_checklist`, `create_flight_plan`) that Claude calls mid-response. Do not pre-fetch everything into the context window.
 
-6. **Dynamic token budgeting** -- `claude_max_tokens` (1024) is used for routine cockpit comms; `claude_max_tokens_briefing` (2048) is used for briefings, checklists, and flight plans. This keeps responses tactical during high-workload phases.
+6. **Dynamic token budgeting** -- Three tiers: 256 tokens for short acknowledgments (roger, thanks, simple questions); `claude_max_tokens` (1024) for routine cockpit comms; `claude_max_tokens_briefing` (2048) for briefings, checklists, and flight plans. This keeps responses tactical during high-workload phases.
 
 7. **Flight-phase-aware response styles** -- Each flight phase injects a style directive into the system prompt (e.g., PREFLIGHT allows banter; TAKEOFF demands brevity). The `FlightPhaseDetector` uses a state machine with hysteresis (3 consecutive detections before transition) to prevent oscillation.
 

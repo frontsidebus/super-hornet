@@ -200,7 +200,7 @@ class VoiceOutput:
         self,
         api_key: str,
         voice_id: str,
-        model_id: str = "eleven_turbo_v2_5",
+        model_id: str = "eleven_multilingual_v2",
         sample_rate: int = 24000,
     ) -> None:
         self._api_key = api_key

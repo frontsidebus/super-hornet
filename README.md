@@ -84,7 +84,7 @@ The bridge connects to MSFS and streams telemetry over WebSocket on port 8080.
 
 ### 4. Open the cockpit UI
 
-Navigate to [http://localhost:8081](http://localhost:8081) in your browser. MERLIN is ready.
+Navigate to [http://localhost:3838](http://localhost:3838) in your browser. MERLIN is ready.
 
 > **WSL2 note:** If running Docker in WSL2, set `SIMCONNECT_WS_HOST` in `.env` to your Windows host IP (not `localhost`). See [docs/INSTALL.md](docs/INSTALL.md) for details.
 
