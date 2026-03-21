@@ -14,7 +14,7 @@
   const RECONNECT_BASE_MS = 1000;
   const RECONNECT_MAX_MS = 30_000;
   const TYPEWRITER_CHAR_MS = 18;
-  const SCROLL_THRESHOLD_PX = 80; // auto-scroll if within this distance of bottom
+  const SCROLL_THRESHOLD_PX = 100; // auto-scroll if within this distance of bottom
   const RENDER_BATCH_MS = 32;     // ~2 frames at 60fps for batched DOM updates
 
   // ── DOM References ─────────────────────────────────────
@@ -35,6 +35,7 @@
     statusChroma:     document.querySelector('#status-chromadb .led'),
     statusClaude:     document.querySelector('#status-claude .led'),
     ttsVolume:        document.getElementById('tts-volume'),
+    volumeValue:      document.getElementById('volume-value'),
     connQuality:      document.getElementById('conn-quality'),
     connQualityText:  document.getElementById('conn-quality-text'),
   };
@@ -210,6 +211,13 @@
       ],
     },
     {
+      header: 'RADIOS',
+      fields: [
+        { key: 'com1', label: 'COM1' },
+        { key: 'com2', label: 'COM2' },
+      ],
+    },
+    {
       header: 'FUEL',
       fields: [
         { key: 'fuel_total', label: 'TOTAL' },
@@ -228,8 +236,7 @@
     for (const section of TELEM_SECTIONS) {
       const headerEl = document.createElement('div');
       headerEl.className = 'telem-section-header';
-      const pad = 34 - section.header.length - 6;
-      headerEl.textContent = `\u2550\u2550\u2550 ${section.header} ` + '\u2550'.repeat(Math.max(pad, 4));
+      headerEl.textContent = section.header;
       frag.appendChild(headerEl);
 
       const row = document.createElement('div');
@@ -282,8 +289,12 @@
     flat.aircraft_type = d.aircraft || '---';
     flat.flight_phase  = d.flight_phase || '---';
 
-    flat.latitude  = pos.latitude  != null ? pos.latitude.toFixed(4) + '°' : '---';
-    flat.longitude = pos.longitude != null ? pos.longitude.toFixed(4) + '°' : '---';
+    flat.latitude  = pos.latitude  != null
+      ? Math.abs(pos.latitude).toFixed(4) + '° ' + (pos.latitude >= 0 ? 'N' : 'S')
+      : '---';
+    flat.longitude = pos.longitude != null
+      ? Math.abs(pos.longitude).toFixed(4) + '° ' + (pos.longitude >= 0 ? 'E' : 'W')
+      : '---';
     flat.altitude  = pos.altitude_msl != null ? Math.round(pos.altitude_msl) + ' ft' : '---';
     flat.agl       = pos.altitude_agl != null ? Math.round(pos.altitude_agl) + ' ft' : '---';
 
@@ -307,6 +318,10 @@
     flat.visibility  = env.visibility_sm != null ? env.visibility_sm.toFixed(1) + ' sm' : '---';
     flat.temperature = env.temperature_c != null ? Math.round(env.temperature_c) + '°C' : '---';
     flat.qnh         = env.barometer_inhg != null ? env.barometer_inhg.toFixed(2) + ' inHg' : '---';
+
+    const radios = d.radios || {};
+    flat.com1 = radios.com1_frequency != null ? radios.com1_frequency.toFixed(3) : '---';
+    flat.com2 = radios.com2_frequency != null ? radios.com2_frequency.toFixed(3) : '---';
 
     flat.fuel_total = fuel.total_gallons != null ? fuel.total_gallons.toFixed(1) + ' gal' : '---';
 
@@ -338,11 +353,8 @@
       const strVal = String(value ?? '---');
       if (el.textContent !== strVal) {
         el.textContent = strVal;
-        // Flash animation — remove and re-add class
-        el.classList.remove('flash');
-        // Force reflow to restart animation
-        void el.offsetWidth;
-        el.classList.add('flash');
+        el.classList.add('value-updated');
+        setTimeout(() => el.classList.remove('value-updated'), 600);
       }
     }
     state.lastTelemetry = { ...state.lastTelemetry, ...data };
@@ -928,16 +940,37 @@
   // This is a UI-only hint -- actual VAD runs server-side via Silero.
   const SPEECH_ENERGY_THRESHOLD = 0.015;
 
+  // Pre-allocated buffers -- avoid allocating in the draw loop
+  let _waveTimeDomain = null;   // Uint8Array for time-domain data
+  let _waveFreqData = null;     // Uint8Array for frequency data
+  let _waveAnimFrameId = null;  // Current rAF id for cancellation
+
+  // Animation phase accumulators (persistent across frames)
+  let _idlePhase = 0;
+  let _sweepPhase = 0;
+  let _speakingPhase = 0;
+  let _lastDrawTime = 0;
+
+  function ensureWaveBuffers(analyser) {
+    const len = analyser.frequencyBinCount;
+    if (!_waveTimeDomain || _waveTimeDomain.length !== len) {
+      _waveTimeDomain = new Uint8Array(len);
+    }
+    if (!_waveFreqData || _waveFreqData.length !== len) {
+      _waveFreqData = new Uint8Array(len);
+    }
+  }
+
   function computeSpeechEnergy(analyser) {
     // Compute energy from frequency-domain data for a simple speech indicator.
-    const freqData = new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteFrequencyData(freqData);
+    ensureWaveBuffers(analyser);
+    analyser.getByteFrequencyData(_waveFreqData);
     let sum = 0;
-    for (let i = 0; i < freqData.length; i++) {
-      const normalized = freqData[i] / 255.0;
+    for (let i = 0; i < _waveFreqData.length; i++) {
+      const normalized = _waveFreqData[i] / 255.0;
       sum += normalized * normalized;
     }
-    return Math.sqrt(sum / freqData.length);
+    return Math.sqrt(sum / _waveFreqData.length);
   }
 
   function updateVadIndicator(isSpeech) {
@@ -954,84 +987,334 @@
     }
   }
 
-  function drawWaveform() {
+  // ── Master draw loop -- dispatches to mode-specific renderers ──
+
+  function startWaveformLoop() {
+    if (_waveAnimFrameId) return; // already running
+    _lastDrawTime = performance.now();
+    _waveAnimFrameId = requestAnimationFrame(waveformFrame);
+  }
+
+  function stopWaveformLoop() {
+    if (_waveAnimFrameId) {
+      cancelAnimationFrame(_waveAnimFrameId);
+      _waveAnimFrameId = null;
+    }
+  }
+
+  function waveformFrame(ts) {
+    _waveAnimFrameId = null;
+
+    // Pause rendering when tab is hidden
+    if (document.hidden) return;
+
+    const dt = Math.min((ts - _lastDrawTime) / 1000, 0.1); // seconds, clamped
+    _lastDrawTime = ts;
+
     const canvas = dom.waveformCanvas;
     const ctx = canvas.getContext('2d');
-    const WIDTH = canvas.width;
-    const HEIGHT = canvas.height;
+    const dpr = window.devicePixelRatio || 1;
+    // Use CSS pixel dimensions for drawing (canvas is scaled by dpr)
+    const W = canvas.width / dpr;
+    const H = canvas.height / dpr;
 
-    function draw() {
-      if (state.voiceMode !== 'recording') {
-        // Draw flat line when not recording
-        ctx.clearRect(0, 0, WIDTH, HEIGHT);
-        ctx.strokeStyle = 'rgba(240, 192, 64, 0.2)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(0, HEIGHT / 2);
-        ctx.lineTo(WIDTH, HEIGHT / 2);
-        ctx.stroke();
-        return;
+    ctx.clearRect(0, 0, W, H);
+
+    switch (state.voiceMode) {
+      case 'recording':
+        drawRecordingWaveform(ctx, W, H, dt);
+        break;
+      case 'speaking':
+        drawSpeakingWaveform(ctx, W, H, dt);
+        break;
+      case 'processing':
+      case 'thinking':
+        drawSweepAnimation(ctx, W, H, dt);
+        break;
+      default:
+        drawIdleOscilloscope(ctx, W, H, dt);
+        break;
+    }
+
+    _waveAnimFrameId = requestAnimationFrame(waveformFrame);
+  }
+
+  // ── 1. Idle: oscilloscope baseline with gentle sine pulse ──
+
+  function drawIdleOscilloscope(ctx, W, H, dt) {
+    _idlePhase += dt * 0.8; // slow phase advance
+
+    const cy = H / 2;
+
+    // Dim horizontal reference line
+    ctx.strokeStyle = 'rgba(240, 192, 64, 0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, cy);
+    ctx.lineTo(W, cy);
+    ctx.stroke();
+
+    // Subtle sine wave -- heartbeat-monitor flat line with faint pulse
+    const amplitude = 2 + Math.sin(_idlePhase * 0.6) * 1.5; // 0.5-3.5 px
+    const freq = 0.015; // cycles per pixel
+
+    // Glow pass
+    ctx.strokeStyle = 'rgba(240, 192, 64, 0.06)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    for (let x = 0; x < W; x++) {
+      const y = cy + Math.sin(x * freq + _idlePhase) * amplitude;
+      if (x === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Crisp pass
+    ctx.strokeStyle = 'rgba(240, 192, 64, 0.18)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x < W; x++) {
+      const y = cy + Math.sin(x * freq + _idlePhase) * amplitude;
+      if (x === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  // ── 2. Recording: dual-pass waveform + frequency bars + baseline ──
+
+  function drawRecordingWaveform(ctx, W, H, dt) {
+    if (!state.analyser) return;
+
+    ensureWaveBuffers(state.analyser);
+
+    // Compute speech energy for VAD indicator
+    const energy = computeSpeechEnergy(state.analyser);
+    updateVadIndicator(energy > SPEECH_ENERGY_THRESHOLD);
+
+    // Fetch time-domain data
+    state.analyser.getByteTimeDomainData(_waveTimeDomain);
+
+    const bufferLength = state.analyser.frequencyBinCount;
+    const cy = H / 2;
+
+    // Dim horizontal center reference line
+    ctx.strokeStyle = 'rgba(240, 192, 64, 0.07)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, cy);
+    ctx.lineTo(W, cy);
+    ctx.stroke();
+
+    // Line thickness scales with speech energy
+    const baseThick = 1.5;
+    const energyThick = Math.min(energy * 40, 3.0); // up to 4.5px when loud
+    const lineWidth = baseThick + energyThick;
+    const glowWidth = lineWidth + 5;
+
+    // Glow pass
+    ctx.strokeStyle = 'rgba(240, 192, 64, 0.12)';
+    ctx.lineWidth = glowWidth;
+    ctx.beginPath();
+    const sliceWidth = W / bufferLength;
+    let x = 0;
+    for (let i = 0; i < bufferLength; i++) {
+      const v = _waveTimeDomain[i] / 128.0;
+      const y = (v * H) / 2;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+      x += sliceWidth;
+    }
+    ctx.stroke();
+
+    // Crisp pass
+    ctx.strokeStyle = '#f0c040';
+    ctx.lineWidth = lineWidth;
+    ctx.beginPath();
+    x = 0;
+    for (let i = 0; i < bufferLength; i++) {
+      const v = _waveTimeDomain[i] / 128.0;
+      const y = (v * H) / 2;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+      x += sliceWidth;
+    }
+    ctx.stroke();
+
+    // ── Frequency spectrum bars along the bottom ──
+    state.analyser.getByteFrequencyData(_waveFreqData);
+    const barCount = 32;
+    const barWidth = W / barCount;
+    const maxBarHeight = H * 0.18; // small, subtle
+    const barY = H - 2;
+    const binStep = Math.floor(_waveFreqData.length / barCount);
+
+    for (let i = 0; i < barCount; i++) {
+      let sum = 0;
+      for (let b = 0; b < binStep; b++) {
+        sum += _waveFreqData[i * binStep + b];
       }
+      const avg = sum / binStep / 255.0;
+      const barH = avg * maxBarHeight;
 
-      requestAnimationFrame(draw);
+      if (barH < 1) continue;
 
-      if (!state.analyser) return;
+      const alpha = 0.15 + avg * 0.35;
+      ctx.fillStyle = `rgba(240, 192, 64, ${alpha})`;
+      ctx.fillRect(i * barWidth + 1, barY - barH, barWidth - 2, barH);
+    }
+  }
 
-      // Compute speech energy for the VAD indicator
-      const energy = computeSpeechEnergy(state.analyser);
-      updateVadIndicator(energy > SPEECH_ENERGY_THRESHOLD);
+  // ── 3. Speaking/TTS: radar rings + mirrored waveform (cyan) ──
 
-      const bufferLength = state.analyser.frequencyBinCount;
-      const dataArray = new Uint8Array(bufferLength);
-      state.analyser.getByteTimeDomainData(dataArray);
+  function drawSpeakingWaveform(ctx, W, H, dt) {
+    _speakingPhase += dt;
 
-      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+    const cx = W / 2;
+    const cy = H / 2;
+    const maxRadius = Math.max(W, H) * 0.6;
+    const ringCount = 4;
+    const ringInterval = 1.2; // seconds between ring spawns
+    const ringLifetime = ringCount * ringInterval;
 
-      // Draw glow pass
-      ctx.strokeStyle = 'rgba(240, 192, 64, 0.15)';
-      ctx.lineWidth = 6;
+    // Dim center crosshair
+    ctx.strokeStyle = 'rgba(64, 220, 240, 0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - 15, cy);
+    ctx.lineTo(cx + 15, cy);
+    ctx.moveTo(cx, cy - 10);
+    ctx.lineTo(cx, cy + 10);
+    ctx.stroke();
+
+    // Concentric expanding rings
+    for (let i = 0; i < ringCount; i++) {
+      const age = (_speakingPhase + i * ringInterval) % ringLifetime;
+      const t = age / ringLifetime; // 0..1 progress
+      const radius = t * maxRadius;
+      const alpha = (1 - t) * 0.45;
+
+      if (alpha < 0.01) continue;
+
+      // Glow ring
+      ctx.strokeStyle = `rgba(64, 220, 240, ${(alpha * 0.3).toFixed(3)})`;
+      ctx.lineWidth = 4;
       ctx.beginPath();
-      const sliceWidth = WIDTH / bufferLength;
-      let x = 0;
-
-      for (let i = 0; i < bufferLength; i++) {
-        const v = dataArray[i] / 128.0;
-        const y = (v * HEIGHT) / 2;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-        x += sliceWidth;
-      }
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Draw crisp pass
-      ctx.strokeStyle = '#f0c040';
+      // Crisp ring
+      ctx.strokeStyle = `rgba(64, 220, 240, ${alpha.toFixed(3)})`;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      x = 0;
-      for (let i = 0; i < bufferLength; i++) {
-        const v = dataArray[i] / 128.0;
-        const y = (v * HEIGHT) / 2;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-        x += sliceWidth;
-      }
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.stroke();
     }
 
-    draw();
+    // Mirrored simulated waveform around center line
+    const wavePoints = 64;
+    const waveSlice = W / wavePoints;
+
+    ctx.strokeStyle = 'rgba(64, 220, 240, 0.3)';
+    ctx.lineWidth = 1;
+
+    // Top half
+    ctx.beginPath();
+    for (let i = 0; i < wavePoints; i++) {
+      const px = i * waveSlice;
+      const noise = Math.sin(i * 0.4 + _speakingPhase * 6)
+                   * Math.sin(i * 0.15 + _speakingPhase * 2.5)
+                   * (0.3 + 0.7 * Math.sin(_speakingPhase * 1.5));
+      const amp = H * 0.12 * Math.abs(noise);
+      const y = cy - amp;
+      if (i === 0) ctx.moveTo(px, y);
+      else ctx.lineTo(px, y);
+    }
+    ctx.stroke();
+
+    // Bottom half (mirror)
+    ctx.beginPath();
+    for (let i = 0; i < wavePoints; i++) {
+      const px = i * waveSlice;
+      const noise = Math.sin(i * 0.4 + _speakingPhase * 6)
+                   * Math.sin(i * 0.15 + _speakingPhase * 2.5)
+                   * (0.3 + 0.7 * Math.sin(_speakingPhase * 1.5));
+      const amp = H * 0.12 * Math.abs(noise);
+      const y = cy + amp;
+      if (i === 0) ctx.moveTo(px, y);
+      else ctx.lineTo(px, y);
+    }
+    ctx.stroke();
   }
 
-  // Draw initial flat waveform
-  function drawIdleWaveform() {
-    const canvas = dom.waveformCanvas;
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = 'rgba(240, 192, 64, 0.2)';
+  // ── 4. Processing/Thinking: radar sweep line ──
+
+  function drawSweepAnimation(ctx, W, H, dt) {
+    _sweepPhase += dt * 0.6;
+
+    const cy = H / 2;
+    const progress = _sweepPhase % 1; // 0..1 across canvas
+
+    // Dim horizontal baseline
+    ctx.strokeStyle = 'rgba(240, 192, 64, 0.06)';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(0, canvas.height / 2);
-    ctx.lineTo(canvas.width, canvas.height / 2);
+    ctx.moveTo(0, cy);
+    ctx.lineTo(W, cy);
     ctx.stroke();
+
+    // Sweep position
+    const sweepX = progress * W;
+
+    // Trailing fade gradient behind the sweep line
+    const trailWidth = W * 0.25;
+    const trailStart = Math.max(0, sweepX - trailWidth);
+    const grad = ctx.createLinearGradient(trailStart, 0, sweepX, 0);
+    grad.addColorStop(0, 'rgba(240, 192, 64, 0)');
+    grad.addColorStop(1, 'rgba(240, 192, 64, 0.12)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(trailStart, 0, sweepX - trailStart, H);
+
+    // Bright sweep line
+    ctx.strokeStyle = 'rgba(240, 192, 64, 0.7)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(sweepX, 0);
+    ctx.lineTo(sweepX, H);
+    ctx.stroke();
+
+    // Glow around the sweep line
+    ctx.strokeStyle = 'rgba(240, 192, 64, 0.15)';
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    ctx.moveTo(sweepX, 0);
+    ctx.lineTo(sweepX, H);
+    ctx.stroke();
+
+    // Small pulsing dots along center line
+    const dotCount = 5;
+    const dotSpacing = W / (dotCount + 1);
+    for (let i = 1; i <= dotCount; i++) {
+      const dx = i * dotSpacing;
+      const dist = Math.abs(dx - sweepX);
+      const alpha = Math.max(0, 0.4 - dist / (W * 0.15));
+      if (alpha < 0.01) continue;
+
+      ctx.fillStyle = `rgba(240, 192, 64, ${alpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(dx, cy, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // ── Legacy entry points (called by startRecording / init) ──
+
+  function drawWaveform() {
+    startWaveformLoop();
+  }
+
+  function drawIdleWaveform() {
+    startWaveformLoop();
   }
 
   // ── PTT Button Handlers ────────────────────────────────
@@ -1070,6 +1353,64 @@
       e.preventDefault();
       state.isSpaceHeld = false;
       stopRecording();
+    }
+  });
+
+  // ── Keyboard Shortcuts Help ─────────────────────────────
+
+  let _helpOverlay = null;
+  let _helpTimeout = null;
+
+  function showKeyboardHelp() {
+    if (_helpOverlay) return;
+
+    _helpOverlay = document.createElement('div');
+    _helpOverlay.className = 'keyboard-help-overlay';
+    _helpOverlay.innerHTML = [
+      '<div class="keyboard-help-title">KEYBOARD SHORTCUTS</div>',
+      '<div class="keyboard-help-row"><kbd>SPACE</kbd> Push-to-talk</div>',
+      '<div class="keyboard-help-row"><kbd>ENTER</kbd> Send text message</div>',
+      '<div class="keyboard-help-row"><kbd>ESC</kbd> Cancel recording / clear input</div>',
+    ].join('');
+    document.body.appendChild(_helpOverlay);
+
+    // Force layout then add visible class for CSS transition
+    requestAnimationFrame(() => {
+      if (_helpOverlay) _helpOverlay.classList.add('visible');
+    });
+
+    _helpTimeout = setTimeout(dismissKeyboardHelp, 3000);
+  }
+
+  function dismissKeyboardHelp() {
+    if (!_helpOverlay) return;
+    _helpOverlay.classList.remove('visible');
+    const el = _helpOverlay;
+    // Remove after fade-out transition
+    setTimeout(() => {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }, 300);
+    _helpOverlay = null;
+    if (_helpTimeout) {
+      clearTimeout(_helpTimeout);
+      _helpTimeout = null;
+    }
+  }
+
+  document.addEventListener('keydown', (e) => {
+    // Show help on '?' when chat input is not focused
+    if (e.key === '?' && document.activeElement !== dom.chatInput) {
+      e.preventDefault();
+      showKeyboardHelp();
+    }
+    // ESC: cancel recording or clear chat input
+    if (e.key === 'Escape') {
+      if (state.voiceMode === 'recording') {
+        stopRecording();
+      } else if (document.activeElement === dom.chatInput) {
+        dom.chatInput.value = '';
+      }
+      dismissKeyboardHelp();
     }
   });
 
@@ -1208,12 +1549,18 @@
   // ── Volume control ─────────────────────────────────────
 
   if (dom.ttsVolume) {
+    // Set initial volume label
+    const initPct = Math.round(state.ttsVolume * 100);
+    if (dom.volumeValue) dom.volumeValue.textContent = `${initPct}%`;
+
     dom.ttsVolume.addEventListener('input', (e) => {
       state.ttsVolume = parseFloat(e.target.value);
       // Apply to master gain node immediately
       if (_playbackGain) {
         _playbackGain.gain.value = state.ttsVolume;
       }
+      const pct = Math.round(state.ttsVolume * 100);
+      if (dom.volumeValue) dom.volumeValue.textContent = `${pct}%`;
     });
   }
 
@@ -1279,6 +1626,12 @@
       if (_playbackCtx && _playbackCtx.state === 'suspended') {
         _playbackCtx.resume();
       }
+
+      // Restart waveform animation loop
+      startWaveformLoop();
+    } else {
+      // Tab hidden — cancel animation frames to save CPU
+      stopWaveformLoop();
     }
   });
 
@@ -1286,11 +1639,19 @@
   //  INITIALIZATION
   // ═══════════════════════════════════════════════════════
 
+  function showWelcomeMessage() {
+    addSystemMessage('MERLIN AI Co-Pilot v1.1 ready.');
+    addSystemMessage('Voice: hold SPACE or click MIC. Text: type below.');
+  }
+
   function init() {
     resizeWaveformCanvas();
     window.addEventListener('resize', resizeWaveformCanvas);
     drawIdleWaveform();
     showAwaitingTelemetry();
+
+    // Show welcome message before connections
+    showWelcomeMessage();
 
     // Connect WebSockets
     connectTelemetry();
@@ -1300,8 +1661,6 @@
     pollStatus();
     setInterval(pollStatus, STATUS_POLL_MS);
 
-    addSystemMessage('MERLIN AI Co-Pilot initializing...');
-    addSystemMessage('Spacebar = push-to-talk (when chat input not focused).');
     updateConnectionQuality();
   }
 

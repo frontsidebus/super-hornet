@@ -10,8 +10,8 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <div id="scanlines"></div>
-  <div id="vignette"></div>
+  <div id="scanlines" aria-hidden="true"></div>
+  <div id="vignette" aria-hidden="true"></div>
 
   <div id="app">
     <!-- HEADER BAR -->
@@ -29,7 +29,7 @@
           <span class="conn-quality-led conn-offline" id="conn-quality" aria-hidden="true"></span>
           <span class="conn-quality-label" id="conn-quality-text">OFFLINE</span>
         </div>
-        <div class="header-divider"></div>
+        <div class="header-divider" aria-hidden="true"></div>
         <div class="status-led-group" role="group" aria-label="Subsystem status indicators">
           <div class="status-indicator" id="status-simconnect" role="status" aria-label="SimConnect status">
             <span class="led led-red" aria-hidden="true"></span>
@@ -54,10 +54,10 @@
     <!-- MAIN PANELS -->
     <main id="main">
       <!-- TELEMETRY TERMINAL -->
-      <section class="terminal-panel" id="telemetry-panel">
+      <section class="terminal-panel" id="telemetry-panel" aria-label="Telemetry data">
         <div class="terminal-header">
           <span class="terminal-title">TELEMETRY</span>
-          <span class="terminal-led" id="telemetry-led"></span>
+          <span class="terminal-led" id="telemetry-led" aria-hidden="true"></span>
         </div>
         <div class="terminal-content" id="telemetry-content">
           <div class="awaiting-link">AWAITING TELEMETRY LINK...</div>
@@ -65,13 +65,18 @@
       </section>
 
       <!-- MERLIN CHAT TERMINAL -->
-      <section class="terminal-panel" id="chat-panel">
+      <section class="terminal-panel" id="chat-panel" aria-label="MERLIN chat terminal">
         <div class="terminal-header">
           <span class="terminal-title">MERLIN TERMINAL</span>
-          <span class="terminal-led" id="chat-led"></span>
+          <span class="terminal-led" id="chat-led" aria-hidden="true"></span>
         </div>
         <div class="terminal-content" id="chat-content">
-          <div class="chat-messages" id="chat-messages" role="log" aria-live="polite" aria-label="Chat messages"></div>
+          <div class="chat-messages" id="chat-messages" role="log" aria-live="polite" aria-label="Chat messages">
+            <div class="chat-welcome" id="chat-welcome" aria-label="Welcome message">
+              <span class="chat-welcome-callsign">MERLIN ONLINE</span>
+              <span class="chat-welcome-prompt">Ready for tasking. Type a command below or hold SPACE to transmit voice.</span>
+            </div>
+          </div>
         </div>
         <div class="chat-input-row">
           <input type="text" id="chat-input" placeholder="Enter command... (SPACE = push-to-talk)" autocomplete="off" spellcheck="false" aria-label="Chat input">
@@ -83,7 +88,7 @@
     <footer id="footer">
       <div class="voice-section">
         <button id="ptt-button" class="ptt-button" aria-label="Push to talk">
-          <svg class="mic-icon" viewBox="0 0 24 24" width="28" height="28">
+          <svg class="mic-icon" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true">
             <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
             <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
           </svg>
@@ -98,6 +103,7 @@
         <div class="volume-control">
           <label class="volume-label" for="tts-volume">VOL</label>
           <input type="range" id="tts-volume" class="volume-slider" min="0" max="1" step="0.05" value="0.8" aria-label="TTS volume">
+          <span class="volume-pct" id="volume-pct" aria-live="polite">80%</span>
         </div>
       </div>
     </footer>
@@ -105,5 +111,31 @@
 
   <audio id="tts-audio" preload="none"></audio>
   <script src="/static/app.js"></script>
+  <script>
+    // Volume percentage display
+    (function() {
+      var slider = document.getElementById('tts-volume');
+      var pct = document.getElementById('volume-pct');
+      if (slider && pct) {
+        slider.addEventListener('input', function() {
+          pct.textContent = Math.round(slider.value * 100) + '%';
+        });
+      }
+
+      // Hide welcome message when first chat message arrives
+      var observer = new MutationObserver(function(mutations) {
+        var welcome = document.getElementById('chat-welcome');
+        var messages = document.getElementById('chat-messages');
+        if (welcome && messages && messages.children.length > 1) {
+          welcome.style.display = 'none';
+          observer.disconnect();
+        }
+      });
+      var chatMessages = document.getElementById('chat-messages');
+      if (chatMessages) {
+        observer.observe(chatMessages, { childList: true });
+      }
+    })();
+  </script>
 </body>
 </html>
