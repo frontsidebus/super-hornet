@@ -20,7 +20,7 @@ class TestSettingsDefaults:
     def test_default_whisper_model(self, mock_env_vars: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("WHISPER_MODEL", raising=False)
         s = Settings(anthropic_api_key="sk-test")
-        assert s.whisper_model == "base.en"
+        assert s.whisper_model == "small"
 
     def test_default_whisper_url(self, mock_env_vars: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("WHISPER_URL", raising=False)

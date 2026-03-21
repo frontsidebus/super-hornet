@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 
 from .context_store import ContextStore
-from .sim_client import FlightPhase, SimConnectClient, SimState
+from .sim_client import FlightPhase, SimConnectClient
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,10 @@ async def get_sim_state(sim_client: SimConnectClient) -> dict[str, Any]:
             "total_weight_lbs": round(state.fuel.total_weight_lbs, 1),
         },
         "environment": {
-            "wind": f"{round(state.environment.wind_direction)}° at {round(state.environment.wind_speed_kts)}kt",
+            "wind": (
+                f"{round(state.environment.wind_direction)}° at "
+                f"{round(state.environment.wind_speed_kts)}kt"
+            ),
             "visibility_sm": round(state.environment.visibility_sm, 1),
             "temperature_c": round(state.environment.temperature_c),
             "barometer_inhg": round(state.environment.barometer_inhg, 2),
@@ -168,14 +171,15 @@ async def lookup_airport(identifier: str) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             resp = await client.get(
-                f"https://api.aviationapi.com/v1/airports",
+                "https://api.aviationapi.com/v1/airports",
                 params={"apt": identifier},
             )
             resp.raise_for_status()
             data = resp.json()
 
             if identifier in data and data[identifier]:
-                apt = data[identifier][0] if isinstance(data[identifier], list) else data[identifier]
+                raw = data[identifier]
+                apt = raw[0] if isinstance(raw, list) else raw
                 return {
                     "identifier": identifier,
                     "name": apt.get("facility_name", "Unknown"),

@@ -9,6 +9,12 @@ namespace SimConnectBridge;
 /// <summary>
 /// Fleck-based WebSocket server that broadcasts sim state to connected clients
 /// and handles incoming request messages.
+///
+/// Improvements:
+///  - Structured logging with timestamps and severity.
+///  - Clean handling of client disconnects (no unhandled exceptions).
+///  - Heartbeat support: responds to "heartbeat" messages from clients.
+///  - Tracks per-client message counts for diagnostics.
 /// </summary>
 public sealed class TelemetryWebSocketServer : IDisposable
 {
@@ -35,6 +41,11 @@ public sealed class TelemetryWebSocketServer : IDisposable
     }
 
     /// <summary>
+    /// Number of currently connected clients.
+    /// </summary>
+    public int ClientCount => _clients.Count;
+
+    /// <summary>
     /// Starts listening for WebSocket connections.
     /// </summary>
     public void Start()
@@ -47,7 +58,7 @@ public sealed class TelemetryWebSocketServer : IDisposable
             socket.OnError = ex => OnClientError(socket, ex);
         });
 
-        Console.WriteLine($"[WebSocket] Server started on {_server.Location}");
+        Log("INFO", $"Server started on {_server.Location}");
     }
 
     /// <summary>
@@ -66,6 +77,13 @@ public sealed class TelemetryWebSocketServer : IDisposable
         {
             try
             {
+                // Skip clients that are no longer available
+                if (!client.Socket.IsAvailable)
+                {
+                    RemoveClient(client);
+                    continue;
+                }
+
                 string json;
                 if (client.SubscribedFields is null || client.SubscribedFields.Count == 0)
                 {
@@ -78,10 +96,12 @@ public sealed class TelemetryWebSocketServer : IDisposable
                 }
 
                 client.Socket.Send(json);
+                client.MessagesSent++;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[WebSocket] Error sending to client {client.Id}: {ex.Message}");
+                Log("WARN", $"Error sending to client {client.Id}: {ex.Message}");
+                RemoveClient(client);
             }
         }
     }
@@ -98,7 +118,7 @@ public sealed class TelemetryWebSocketServer : IDisposable
         }
         _clients.Clear();
         _server.Dispose();
-        Console.WriteLine("[WebSocket] Server stopped.");
+        Log("INFO", "Server stopped.");
     }
 
     public void Dispose()
@@ -109,6 +129,16 @@ public sealed class TelemetryWebSocketServer : IDisposable
     }
 
     // -----------------------------------------------------------------------
+    //  Structured logging
+    // -----------------------------------------------------------------------
+
+    private static void Log(string level, string message)
+    {
+        var ts = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+        Console.WriteLine($"{ts} [{level}] WebSocket: {message}");
+    }
+
+    // -----------------------------------------------------------------------
     //  Connection handlers
     // -----------------------------------------------------------------------
 
@@ -116,15 +146,21 @@ public sealed class TelemetryWebSocketServer : IDisposable
     {
         var client = new ClientConnection(socket);
         _clients[client.Id] = client;
-        Console.WriteLine($"[WebSocket] Client connected: {client.Id} ({socket.ConnectionInfo.ClientIpAddress})");
+        Log("INFO",
+            $"Client connected: {client.Id} " +
+            $"({socket.ConnectionInfo.ClientIpAddress}) " +
+            $"[total: {_clients.Count}]");
     }
 
     private void OnClientClose(IWebSocketConnection socket)
     {
         var id = GetClientId(socket);
-        if (id is not null && _clients.TryRemove(id.Value, out _))
+        if (id is not null && _clients.TryRemove(id.Value, out var client))
         {
-            Console.WriteLine($"[WebSocket] Client disconnected: {id}");
+            Log("INFO",
+                $"Client disconnected: {id} " +
+                $"(sent {client.MessagesSent} msgs) " +
+                $"[remaining: {_clients.Count}]");
         }
     }
 
@@ -148,31 +184,52 @@ public sealed class TelemetryWebSocketServer : IDisposable
                     HandleSubscribe(clientId.Value, request.Fields);
                     break;
 
+                case "heartbeat":
+                    HandleHeartbeat(socket);
+                    break;
+
                 default:
+                    Log("DEBUG", $"Unknown request type from {clientId}: {request.Type}");
                     var errorResponse = JsonSerializer.Serialize(new
                     {
                         type = "error",
                         message = $"Unknown request type: {request.Type}"
                     }, _jsonOptions);
-                    socket.Send(errorResponse);
+                    SafeSend(socket, errorResponse);
                     break;
             }
         }
         catch (JsonException ex)
         {
-            Console.WriteLine($"[WebSocket] Invalid JSON from client: {ex.Message}");
+            Log("WARN", $"Invalid JSON from client: {ex.Message}");
             var errorResponse = JsonSerializer.Serialize(new
             {
                 type = "error",
                 message = "Invalid JSON"
             }, _jsonOptions);
-            socket.Send(errorResponse);
+            SafeSend(socket, errorResponse);
         }
     }
 
     private void OnClientError(IWebSocketConnection socket, Exception ex)
     {
-        Console.WriteLine($"[WebSocket] Client error: {ex.Message}");
+        var clientId = GetClientId(socket);
+
+        // ObjectDisposedException and IOException are normal during
+        // client disconnect -- log at DEBUG level to avoid noise.
+        if (ex is ObjectDisposedException or System.IO.IOException)
+        {
+            Log("DEBUG", $"Client {clientId} socket error (expected on disconnect): {ex.GetType().Name}");
+        }
+        else
+        {
+            Log("WARN", $"Client {clientId} error: {ex.Message}");
+        }
+
+        if (clientId is not null)
+        {
+            RemoveClient(clientId.Value);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -181,12 +238,12 @@ public sealed class TelemetryWebSocketServer : IDisposable
 
     private void HandleGetState(IWebSocketConnection socket)
     {
-        // The caller can obtain the current state from SimConnectManager.
-        // We send a response indicating the request was received;
-        // the next broadcast will deliver the full state.
-        // For an immediate response, the BroadcastState path handles it.
-        var response = new { type = "state_response", message = "Full state will be delivered on next update cycle." };
-        socket.Send(JsonSerializer.Serialize(response, _jsonOptions));
+        var response = new
+        {
+            type = "state_response",
+            message = "Full state will be delivered on next update cycle."
+        };
+        SafeSend(socket, JsonSerializer.Serialize(response, _jsonOptions));
     }
 
     private void HandleSubscribe(Guid clientId, List<string>? fields)
@@ -194,16 +251,51 @@ public sealed class TelemetryWebSocketServer : IDisposable
         if (_clients.TryGetValue(clientId, out var client))
         {
             client.SubscribedFields = fields;
-            Console.WriteLine($"[WebSocket] Client {clientId} subscribed to: {(fields is null ? "all" : string.Join(", ", fields))}");
+            Log("INFO",
+                $"Client {clientId} subscribed to: " +
+                $"{(fields is null ? "all" : string.Join(", ", fields))}");
 
-            var ack = new { type = "subscribe_ack", fields = fields ?? new List<string> { "all" } };
-            client.Socket.Send(JsonSerializer.Serialize(ack, _jsonOptions));
+            var ack = new
+            {
+                type = "subscribe_ack",
+                fields = fields ?? new List<string> { "all" }
+            };
+            SafeSend(client.Socket, JsonSerializer.Serialize(ack, _jsonOptions));
         }
+    }
+
+    private void HandleHeartbeat(IWebSocketConnection socket)
+    {
+        var response = new
+        {
+            type = "heartbeat_ack",
+            timestamp = DateTimeOffset.UtcNow.ToString("o"),
+            clients = _clients.Count
+        };
+        SafeSend(socket, JsonSerializer.Serialize(response, _jsonOptions));
     }
 
     // -----------------------------------------------------------------------
     //  Helpers
     // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Safely send a message, catching any exception from a disconnected socket.
+    /// </summary>
+    private void SafeSend(IWebSocketConnection socket, string message)
+    {
+        try
+        {
+            if (socket.IsAvailable)
+            {
+                socket.Send(message);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log("DEBUG", $"SafeSend failed: {ex.Message}");
+        }
+    }
 
     private Guid? GetClientId(IWebSocketConnection socket)
     {
@@ -212,6 +304,19 @@ public sealed class TelemetryWebSocketServer : IDisposable
             if (client.Socket == socket) return id;
         }
         return null;
+    }
+
+    private void RemoveClient(ClientConnection client)
+    {
+        RemoveClient(client.Id);
+    }
+
+    private void RemoveClient(Guid clientId)
+    {
+        if (_clients.TryRemove(clientId, out _))
+        {
+            Log("DEBUG", $"Removed stale client {clientId} [remaining: {_clients.Count}]");
+        }
     }
 
     /// <summary>
@@ -257,6 +362,7 @@ public sealed class TelemetryWebSocketServer : IDisposable
         public Guid Id { get; } = Guid.NewGuid();
         public IWebSocketConnection Socket { get; }
         public List<string>? SubscribedFields { get; set; }
+        public long MessagesSent { get; set; }
 
         public ClientConnection(IWebSocketConnection socket)
         {

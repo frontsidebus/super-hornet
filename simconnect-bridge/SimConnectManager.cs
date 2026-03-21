@@ -7,6 +7,10 @@ namespace SimConnectBridge;
 /// <summary>
 /// Manages the SimConnect connection lifecycle, data definition registration,
 /// periodic polling, and state updates.
+///
+/// Supports automatic reconnection when MSFS crashes or is restarted -- the
+/// manager detects sustained COM errors or a OnRecvQuit callback and re-enters
+/// the retry loop without requiring a process restart.
 /// </summary>
 public sealed class SimConnectManager : IDisposable
 {
@@ -21,6 +25,8 @@ public sealed class SimConnectManager : IDisposable
     private Timer? _messageTimer;
     private bool _connected;
     private bool _disposed;
+    private bool _autoReconnect = true;
+    private CancellationTokenSource? _reconnectCts;
 
     /// <summary>
     /// The current simulation state, updated on each data receive callback.
@@ -79,12 +85,32 @@ public sealed class SimConnectManager : IDisposable
             CurrentState.Connected = true;
             ConnectionChanged?.Invoke(true);
 
-            Console.WriteLine("[SimConnect] Connection opened.");
+            Log("INFO", "Connection opened");
             return true;
         }
         catch (COMException ex)
         {
-            Console.WriteLine($"[SimConnect] Failed to connect: {ex.Message}");
+            // 0xe0434352 is the generic CLR exception HResult -- this happens
+            // when SimConnect.dll is not registered (MSI not re-run after
+            // MSFS restart).  We log a helpful message rather than crashing.
+            if (ex.HResult == unchecked((int)0xe0434352) || ex.HResult == unchecked((int)0x80004005))
+            {
+                Log("ERROR",
+                    $"SimConnect COM error 0x{ex.HResult:X8}. " +
+                    "SimConnect SDK may need re-registration. " +
+                    "Try re-running the SimConnect MSI installer from the MSFS SDK folder.");
+            }
+            else
+            {
+                Log("WARN", $"Failed to connect: 0x{ex.HResult:X8} -- {ex.Message}");
+            }
+            _connected = false;
+            CurrentState.Connected = false;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Log("ERROR", $"Unexpected error during connect: {ex.Message}");
             _connected = false;
             CurrentState.Connected = false;
             return false;
@@ -93,18 +119,50 @@ public sealed class SimConnectManager : IDisposable
 
     /// <summary>
     /// Attempts to connect to SimConnect in a retry loop until cancelled.
+    /// On disconnect, automatically re-enters the retry loop if
+    /// <paramref name="cancellationToken"/> has not been cancelled.
     /// </summary>
     /// <param name="cancellationToken">Token to cancel the retry loop.</param>
     /// <param name="retryDelayMs">Delay between connection attempts.</param>
-    public async Task ConnectWithRetryAsync(CancellationToken cancellationToken, int retryDelayMs = 5000)
+    public async Task ConnectWithRetryAsync(
+        CancellationToken cancellationToken, int retryDelayMs = 5000)
     {
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            if (Connect())
-                return;
+        _autoReconnect = true;
+        _reconnectCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-            Console.WriteLine($"[SimConnect] Retrying in {retryDelayMs}ms...");
-            await Task.Delay(retryDelayMs, cancellationToken).ConfigureAwait(false);
+        while (!_reconnectCts.Token.IsCancellationRequested)
+        {
+            // --- Connection attempt loop ---
+            while (!_reconnectCts.Token.IsCancellationRequested)
+            {
+                if (Connect())
+                    break;
+
+                Log("INFO", $"Retrying in {retryDelayMs}ms...");
+                await Task.Delay(retryDelayMs, _reconnectCts.Token)
+                    .ConfigureAwait(false);
+            }
+
+            if (_reconnectCts.Token.IsCancellationRequested)
+                break;
+
+            // --- Wait for disconnect ---
+            // We spin here until HandleDisconnect sets _connected = false,
+            // which means MSFS quit or a sustained COM error occurred.
+            while (_connected && !_reconnectCts.Token.IsCancellationRequested)
+            {
+                await Task.Delay(1000, _reconnectCts.Token)
+                    .ConfigureAwait(false);
+            }
+
+            if (_reconnectCts.Token.IsCancellationRequested || !_autoReconnect)
+                break;
+
+            Log("INFO", "SimConnect lost. Will attempt auto-reconnect...");
+            // Brief pause before retrying to avoid tight-loop on fast
+            // repeated disconnects.
+            await Task.Delay(retryDelayMs, _reconnectCts.Token)
+                .ConfigureAwait(false);
         }
     }
 
@@ -113,6 +171,8 @@ public sealed class SimConnectManager : IDisposable
     /// </summary>
     public void Disconnect()
     {
+        _autoReconnect = false;
+        _reconnectCts?.Cancel();
         StopTimers();
 
         if (_simConnect is not null)
@@ -123,7 +183,7 @@ public sealed class SimConnectManager : IDisposable
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[SimConnect] Error during disconnect: {ex.Message}");
+                Log("WARN", $"Error during disconnect: {ex.Message}");
             }
             _simConnect = null;
         }
@@ -131,7 +191,7 @@ public sealed class SimConnectManager : IDisposable
         _connected = false;
         CurrentState.Connected = false;
         ConnectionChanged?.Invoke(false);
-        Console.WriteLine("[SimConnect] Disconnected.");
+        Log("INFO", "Disconnected.");
     }
 
     public void Dispose()
@@ -139,6 +199,16 @@ public sealed class SimConnectManager : IDisposable
         if (_disposed) return;
         _disposed = true;
         Disconnect();
+    }
+
+    // -----------------------------------------------------------------------
+    //  Structured logging helper
+    // -----------------------------------------------------------------------
+
+    private static void Log(string level, string message)
+    {
+        var ts = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+        Console.WriteLine($"{ts} [{level}] SimConnect: {message}");
     }
 
     // -----------------------------------------------------------------------
@@ -153,17 +223,17 @@ public sealed class SimConnectManager : IDisposable
 
         void RegFloat64(DataDefinitionId defId, string varName, string units)
         {
-            Console.WriteLine($"  [{sendCount++}] {defId}: {varName} ({units})");
+            Log("DEBUG", $"  [{sendCount++}] {defId}: {varName} ({units})");
             AddFloat64(_simConnect!, defId, varName, units);
         }
 
         void RegInt32(DataDefinitionId defId, string varName, string units)
         {
-            Console.WriteLine($"  [{sendCount++}] {defId}: {varName} ({units})");
+            Log("DEBUG", $"  [{sendCount++}] {defId}: {varName} ({units})");
             AddInt32(_simConnect!, defId, varName, units);
         }
 
-        Console.WriteLine("[SimConnect] Registering data definitions...");
+        Log("INFO", "Registering data definitions...");
 
         // -- High-frequency data (position, attitude, speeds) --
         var hf = DataDefinitionId.HighFrequency;
@@ -216,7 +286,7 @@ public sealed class SimConnectManager : IDisposable
         }
 
         // -- Aircraft title (string) --
-        Console.WriteLine($"  [{sendCount++}] AircraftTitle: TITLE (string256)");
+        Log("DEBUG", $"  [{sendCount++}] AircraftTitle: TITLE (string256)");
         _simConnect.AddToDataDefinition(
             DataDefinitionId.AircraftTitle,
             "TITLE",
@@ -231,7 +301,7 @@ public sealed class SimConnectManager : IDisposable
         _simConnect.RegisterDataDefineStruct<EngineDataStruct>(DataDefinitionId.EngineData);
         _simConnect.RegisterDataDefineStruct<AircraftTitleData>(DataDefinitionId.AircraftTitle);
 
-        Console.WriteLine($"[SimConnect] {sendCount} data definitions registered.");
+        Log("INFO", $"{sendCount} data definitions registered.");
     }
 
     private static void AddFloat64(SimConnect sc, DataDefinitionId defId, string varName, string units)
@@ -261,7 +331,7 @@ public sealed class SimConnectManager : IDisposable
         _lowFreqTimer = new Timer(_ => RequestLowFrequencyData(), null,
             TimeSpan.Zero, TimeSpan.FromMilliseconds(lowFreqMs));
 
-        Console.WriteLine($"[SimConnect] Polling started: high-freq={_highFrequencyHz}Hz, low-freq={_lowFrequencyHz}Hz");
+        Log("INFO", $"Polling started: high-freq={_highFrequencyHz}Hz, low-freq={_lowFrequencyHz}Hz");
     }
 
     private void StopTimers()
@@ -288,7 +358,7 @@ public sealed class SimConnectManager : IDisposable
         }
         catch (COMException ex)
         {
-            Console.WriteLine($"[SimConnect] HF request failed: 0x{ex.HResult:X8}");
+            Log("WARN", $"HF request failed: 0x{ex.HResult:X8}");
         }
     }
 
@@ -312,7 +382,7 @@ public sealed class SimConnectManager : IDisposable
         }
         catch (COMException ex)
         {
-            Console.WriteLine($"[SimConnect] {label} request failed: 0x{ex.HResult:X8}");
+            Log("WARN", $"{label} request failed: 0x{ex.HResult:X8}");
         }
     }
 
@@ -334,12 +404,14 @@ public sealed class SimConnectManager : IDisposable
             _consecutiveErrors++;
             if (_consecutiveErrors <= 3)
             {
-                Console.WriteLine($"[SimConnect] COM error in message pump: 0x{ex.HResult:X8} (attempt {_consecutiveErrors})");
+                Log("WARN", $"COM error in message pump: 0x{ex.HResult:X8} (attempt {_consecutiveErrors})");
             }
             else if (_consecutiveErrors > 50)
             {
                 // Sustained failures means genuine disconnection
-                Console.WriteLine($"[SimConnect] Sustained COM errors ({_consecutiveErrors}), treating as disconnect.");
+                Log("ERROR",
+                    $"Sustained COM errors ({_consecutiveErrors}), treating as disconnect. " +
+                    $"HResult=0x{ex.HResult:X8}");
                 HandleDisconnect();
             }
         }
@@ -351,20 +423,20 @@ public sealed class SimConnectManager : IDisposable
 
     private void OnRecvOpen(SimConnect sender, SIMCONNECT_RECV_OPEN data)
     {
-        Console.WriteLine($"[SimConnect] Recv Open: {data.szApplicationName}");
+        Log("INFO", $"Recv Open: {data.szApplicationName}");
         StartPolling();
     }
 
     private void OnRecvQuit(SimConnect sender, SIMCONNECT_RECV data)
     {
-        Console.WriteLine("[SimConnect] Simulator quit.");
+        Log("WARN", "Simulator quit detected.");
         HandleDisconnect();
     }
 
     private void OnRecvException(SimConnect sender, SIMCONNECT_RECV_EXCEPTION data)
     {
         var ex = (SIMCONNECT_EXCEPTION)data.dwException;
-        Console.WriteLine($"[SimConnect] Exception: {ex} (SendID={data.dwSendID}, Index={data.dwIndex})");
+        Log("WARN", $"Exception: {ex} (SendID={data.dwSendID}, Index={data.dwIndex})");
 
         // NAME_UNRECOGNIZED and other definition errors are non-fatal warnings.
         // Only treat connection-level errors as disconnects.
@@ -491,7 +563,17 @@ public sealed class SimConnectManager : IDisposable
         _connected = false;
         CurrentState.Connected = false;
         StopTimers();
+
+        // Dispose the old SimConnect instance so a fresh Connect() can
+        // create a new one.
+        if (_simConnect is not null)
+        {
+            try { _simConnect.Dispose(); }
+            catch { /* best-effort cleanup */ }
+            _simConnect = null;
+        }
+
         ConnectionChanged?.Invoke(false);
-        Console.WriteLine("[SimConnect] Connection lost.");
+        Log("WARN", "Connection lost. Auto-reconnect will engage if enabled.");
     }
 }

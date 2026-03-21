@@ -14,6 +14,8 @@
   const RECONNECT_BASE_MS = 1000;
   const RECONNECT_MAX_MS = 30_000;
   const TYPEWRITER_CHAR_MS = 18;
+  const SCROLL_THRESHOLD_PX = 80; // auto-scroll if within this distance of bottom
+  const RENDER_BATCH_MS = 32;     // ~2 frames at 60fps for batched DOM updates
 
   // ── DOM References ─────────────────────────────────────
   const dom = {
@@ -32,6 +34,9 @@
     statusWhisper:    document.querySelector('#status-whisper .led'),
     statusChroma:     document.querySelector('#status-chromadb .led'),
     statusClaude:     document.querySelector('#status-claude .led'),
+    ttsVolume:        document.getElementById('tts-volume'),
+    connQuality:      document.getElementById('conn-quality'),
+    connQualityText:  document.getElementById('conn-quality-text'),
   };
 
   // ── State ──────────────────────────────────────────────
@@ -41,7 +46,7 @@
     telemetryReconnectAttempts: 0,
     chatReconnectAttempts: 0,
     lastTelemetry: {},
-    voiceMode: 'idle', // idle | recording | processing | speaking
+    voiceMode: 'idle', // idle | recording | processing | thinking | speaking
     mediaRecorder: null,
     audioStream: null,
     audioContext: null,
@@ -51,9 +56,22 @@
     streamingMsgEl: null,
     streamingText: '',
     streamingIndex: 0,
-    streamingTimer: null,
+    streamingRafId: null,
+    lastStreamingRenderTime: 0,
     audioQueue: [],
     isPlayingAudio: false,
+    currentAudio: null,
+    ttsVolume: 0.8,
+    seenMessageIds: new Set(),      // dedup after reconnect
+    messageIdCounter: 0,
+    isUserScrolledUp: false,
+    telemetryRafPending: false,
+    pendingTelemetryData: null,
+    chatReconnecting: false,        // suppress duplicate system messages
+    telemetryReconnecting: false,
+    wsMessageBuffer: [],            // backpressure buffer
+    wsBufferProcessing: false,
+    thinkingMsgEl: null,            // "MERLIN is thinking..." indicator
   };
 
   // ═══════════════════════════════════════════════════════
@@ -66,6 +84,7 @@
   }
 
   function setLed(el, status) {
+    if (!el) return;
     el.className = 'led';
     if (status === 'green')  el.classList.add('led-green');
     else if (status === 'amber') el.classList.add('led-amber');
@@ -73,11 +92,62 @@
   }
 
   function setTerminalLed(el, connected) {
+    if (!el) return;
     el.classList.toggle('connected', connected);
   }
 
   function reconnectDelay(attempts) {
     return Math.min(RECONNECT_BASE_MS * Math.pow(2, attempts), RECONNECT_MAX_MS);
+  }
+
+  function generateMessageId() {
+    return `msg-${Date.now()}-${state.messageIdCounter++}`;
+  }
+
+  // ── Scroll management ──────────────────────────────────
+
+  function isNearBottom() {
+    const el = dom.chatContent;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD_PX;
+  }
+
+  function scrollChatIfNeeded() {
+    if (!state.isUserScrolledUp) {
+      dom.chatContent.scrollTop = dom.chatContent.scrollHeight;
+    }
+  }
+
+  // Track user scroll intent
+  if (dom.chatContent) {
+    dom.chatContent.addEventListener('scroll', () => {
+      state.isUserScrolledUp = !isNearBottom();
+    }, { passive: true });
+  }
+
+  // ── Connection quality ─────────────────────────────────
+
+  function updateConnectionQuality() {
+    const telOk = state.telemetryWs && state.telemetryWs.readyState === WebSocket.OPEN;
+    const chatOk = state.chatWs && state.chatWs.readyState === WebSocket.OPEN;
+
+    let quality, label;
+    if (telOk && chatOk) {
+      quality = 'good';
+      label = 'CONNECTED';
+    } else if (telOk || chatOk) {
+      quality = 'degraded';
+      label = 'DEGRADED';
+    } else {
+      quality = 'offline';
+      label = 'OFFLINE';
+    }
+
+    if (dom.connQuality) {
+      dom.connQuality.className = `conn-quality-led conn-${quality}`;
+    }
+    if (dom.connQualityText) {
+      dom.connQualityText.textContent = label;
+    }
   }
 
   // ═══════════════════════════════════════════════════════
@@ -146,8 +216,12 @@
     },
   ];
 
+  // Cache telemetry value elements for fast lookup (avoid querySelectorAll per update)
+  const _telemValueCache = new Map();
+
   function buildTelemetryDOM() {
     dom.telemetryContent.innerHTML = '';
+    _telemValueCache.clear();
     const frag = document.createDocumentFragment();
 
     for (const section of TELEM_SECTIONS) {
@@ -163,8 +237,19 @@
       for (const field of section.fields) {
         const span = document.createElement('span');
         span.className = 'telem-field';
-        span.innerHTML = `<span class="telem-label">${field.label}: </span><span class="telem-value" data-key="${field.key}">---</span>`;
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'telem-label';
+        labelSpan.textContent = `${field.label}: `;
+        const valueSpan = document.createElement('span');
+        valueSpan.className = 'telem-value';
+        valueSpan.dataset.key = field.key;
+        valueSpan.textContent = '---';
+        span.appendChild(labelSpan);
+        span.appendChild(valueSpan);
         row.appendChild(span);
+
+        // Cache for direct access
+        _telemValueCache.set(field.key, valueSpan);
       }
 
       frag.appendChild(row);
@@ -174,15 +259,28 @@
   }
 
   function updateTelemetryValues(data) {
-    // data is a flat object with key-value pairs
+    // Use rAF to coalesce rapid telemetry updates and avoid layout thrash
+    state.pendingTelemetryData = { ...state.pendingTelemetryData, ...data };
+    if (!state.telemetryRafPending) {
+      state.telemetryRafPending = true;
+      requestAnimationFrame(flushTelemetryUpdate);
+    }
+  }
+
+  function flushTelemetryUpdate() {
+    state.telemetryRafPending = false;
+    const data = state.pendingTelemetryData;
+    if (!data) return;
+    state.pendingTelemetryData = null;
+
     for (const [key, value] of Object.entries(data)) {
-      const el = dom.telemetryContent.querySelector(`[data-key="${key}"]`);
+      const el = _telemValueCache.get(key);
       if (!el) continue;
 
       const strVal = String(value ?? '---');
       if (el.textContent !== strVal) {
         el.textContent = strVal;
-        // Flash animation
+        // Flash animation — remove and re-add class
         el.classList.remove('flash');
         // Force reflow to restart animation
         void el.offsetWidth;
@@ -194,6 +292,7 @@
 
   function showAwaitingTelemetry() {
     dom.telemetryContent.innerHTML = '<div class="awaiting-link">AWAITING TELEMETRY LINK...</div>';
+    _telemValueCache.clear();
   }
 
   // ── Telemetry WebSocket ────────────────────────────────
@@ -208,7 +307,14 @@
       state.telemetryReconnectAttempts = 0;
       setTerminalLed(dom.telemetryLed, true);
       buildTelemetryDOM();
-      addSystemMessage('Telemetry link established.');
+      if (!state.telemetryReconnecting) {
+        addSystemMessage('Telemetry link established.');
+      } else {
+        // Reconnect succeeded — single quiet message
+        addSystemMessage('Telemetry link restored.');
+      }
+      state.telemetryReconnecting = false;
+      updateConnectionQuality();
     });
 
     ws.addEventListener('message', (evt) => {
@@ -225,7 +331,13 @@
       showAwaitingTelemetry();
       state.telemetryReconnectAttempts++;
       const delay = reconnectDelay(state.telemetryReconnectAttempts);
-      addSystemMessage(`Telemetry link lost. Reconnecting in ${(delay / 1000).toFixed(0)}s...`);
+
+      // Only show disconnect message once, not on every retry
+      if (!state.telemetryReconnecting) {
+        state.telemetryReconnecting = true;
+        addSystemMessage('Telemetry link lost. Reconnecting...');
+      }
+      updateConnectionQuality();
       setTimeout(connectTelemetry, delay);
     });
 
@@ -239,6 +351,10 @@
   // ═══════════════════════════════════════════════════════
 
   function addChatMessage(sender, text, opts = {}) {
+    // Dedup check: if message has an id we have already seen, skip
+    if (opts.id && state.seenMessageIds.has(opts.id)) return null;
+    if (opts.id) state.seenMessageIds.add(opts.id);
+
     const msg = document.createElement('div');
     const isMerlin = sender === 'MERLIN';
     msg.className = `chat-msg ${isMerlin ? 'merlin-msg' : sender === 'SYSTEM' ? 'system-msg' : 'captain-msg'}`;
@@ -256,7 +372,7 @@
     }
 
     dom.chatMessages.appendChild(msg);
-    scrollChat();
+    scrollChatIfNeeded();
     return msg;
   }
 
@@ -264,7 +380,31 @@
     addChatMessage('SYSTEM', text);
   }
 
+  // ── Thinking indicator ─────────────────────────────────
+
+  function showThinkingIndicator() {
+    removeThinkingIndicator();
+    const msg = document.createElement('div');
+    msg.className = 'chat-msg merlin-msg thinking-indicator';
+    const ts = `<span class="timestamp">[${timestamp()}]</span> `;
+    const sender = `<span class="sender-merlin">MERLIN:</span> `;
+    msg.innerHTML = ts + sender + `<span class="msg-text-merlin thinking-dots">thinking</span>`;
+    dom.chatMessages.appendChild(msg);
+    state.thinkingMsgEl = msg;
+    scrollChatIfNeeded();
+  }
+
+  function removeThinkingIndicator() {
+    if (state.thinkingMsgEl) {
+      state.thinkingMsgEl.remove();
+      state.thinkingMsgEl = null;
+    }
+  }
+
+  // ── Streaming messages ─────────────────────────────────
+
   function startStreamingMessage() {
+    removeThinkingIndicator();
     const msg = document.createElement('div');
     msg.className = 'chat-msg merlin-msg';
     const ts = `<span class="timestamp">[${timestamp()}]</span> `;
@@ -274,33 +414,52 @@
     state.streamingMsgEl = msg;
     state.streamingText = '';
     state.streamingIndex = 0;
-    scrollChat();
+    state.lastStreamingRenderTime = 0;
+    scrollChatIfNeeded();
     return msg;
   }
 
   function appendStreamingChunk(text) {
     state.streamingText += text;
-    // Start typewriter if not already running
-    if (!state.streamingTimer) {
-      typewriterTick();
+    // Start rAF-based rendering if not already running
+    if (!state.streamingRafId) {
+      state.streamingRafId = requestAnimationFrame(typewriterFrame);
     }
   }
 
-  function typewriterTick() {
-    if (!state.streamingMsgEl) return;
+  function typewriterFrame(ts) {
+    if (!state.streamingMsgEl) {
+      state.streamingRafId = null;
+      return;
+    }
     if (state.streamingIndex >= state.streamingText.length) {
-      state.streamingTimer = null;
+      state.streamingRafId = null;
       return;
     }
 
     const el = state.streamingMsgEl.querySelector('[data-streaming]');
-    if (!el) return;
+    if (!el) {
+      state.streamingRafId = null;
+      return;
+    }
 
-    el.textContent += state.streamingText[state.streamingIndex];
-    state.streamingIndex++;
-    scrollChat();
+    // Calculate how many characters to render this frame based on elapsed time
+    if (!state.lastStreamingRenderTime) state.lastStreamingRenderTime = ts;
+    const elapsed = ts - state.lastStreamingRenderTime;
+    const charsToRender = Math.max(1, Math.floor(elapsed / TYPEWRITER_CHAR_MS));
+    state.lastStreamingRenderTime = ts;
 
-    state.streamingTimer = setTimeout(typewriterTick, TYPEWRITER_CHAR_MS);
+    const endIndex = Math.min(state.streamingIndex + charsToRender, state.streamingText.length);
+    // Batch-append multiple characters at once to reduce DOM ops
+    el.textContent = state.streamingText.slice(0, endIndex);
+    state.streamingIndex = endIndex;
+    scrollChatIfNeeded();
+
+    if (state.streamingIndex < state.streamingText.length) {
+      state.streamingRafId = requestAnimationFrame(typewriterFrame);
+    } else {
+      state.streamingRafId = null;
+    }
   }
 
   function finishStreamingMessage() {
@@ -317,22 +476,43 @@
       state.streamingMsgEl = null;
       state.streamingText = '';
       state.streamingIndex = 0;
-      if (state.streamingTimer) {
-        clearTimeout(state.streamingTimer);
-        state.streamingTimer = null;
+      if (state.streamingRafId) {
+        cancelAnimationFrame(state.streamingRafId);
+        state.streamingRafId = null;
       }
+      state.lastStreamingRenderTime = 0;
     }
-    scrollChat();
-  }
-
-  function scrollChat() {
-    dom.chatContent.scrollTop = dom.chatContent.scrollHeight;
+    removeThinkingIndicator();
+    scrollChatIfNeeded();
   }
 
   function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  // ═══════════════════════════════════════════════════════
+  //  BARGE-IN: Interrupt TTS when user starts talking/typing
+  // ═══════════════════════════════════════════════════════
+
+  function bargeIn() {
+    if (!state.isPlayingAudio && state.audioQueue.length === 0) return;
+
+    // Stop current audio
+    if (state.currentAudio) {
+      state.currentAudio.pause();
+      state.currentAudio.src = '';
+      state.currentAudio = null;
+    }
+
+    // Clear pending audio queue
+    state.audioQueue.length = 0;
+    state.isPlayingAudio = false;
+
+    if (state.voiceMode === 'speaking') {
+      setVoiceMode('idle');
+    }
   }
 
   // ── Chat WebSocket ─────────────────────────────────────
@@ -346,7 +526,13 @@
     ws.addEventListener('open', () => {
       state.chatReconnectAttempts = 0;
       setTerminalLed(dom.chatLed, true);
-      addSystemMessage('MERLIN terminal online.');
+      if (!state.chatReconnecting) {
+        addSystemMessage('MERLIN terminal online.');
+      } else {
+        addSystemMessage('MERLIN terminal reconnected.');
+      }
+      state.chatReconnecting = false;
+      updateConnectionQuality();
     });
 
     ws.binaryType = 'blob';
@@ -357,11 +543,10 @@
         queueAudioBlob(evt.data);
         return;
       }
-      try {
-        const msg = JSON.parse(evt.data);
-        handleChatMessage(msg);
-      } catch (e) {
-        addChatMessage('MERLIN', evt.data);
+      // Buffer incoming messages for backpressure handling
+      state.wsMessageBuffer.push(evt.data);
+      if (!state.wsBufferProcessing) {
+        processMessageBuffer();
       }
     });
 
@@ -370,7 +555,12 @@
       finishStreamingMessage();
       state.chatReconnectAttempts++;
       const delay = reconnectDelay(state.chatReconnectAttempts);
-      addSystemMessage(`MERLIN terminal disconnected. Reconnecting in ${(delay / 1000).toFixed(0)}s...`);
+
+      if (!state.chatReconnecting) {
+        state.chatReconnecting = true;
+        addSystemMessage('MERLIN terminal disconnected. Reconnecting...');
+      }
+      updateConnectionQuality();
       setTimeout(connectChat, delay);
     });
 
@@ -379,17 +569,69 @@
     });
   }
 
+  // ── Backpressure: process buffered WebSocket messages in batches ──
+
+  function processMessageBuffer() {
+    state.wsBufferProcessing = true;
+
+    // Process up to 10 messages per frame to avoid blocking
+    const batchSize = 10;
+    let processed = 0;
+
+    while (state.wsMessageBuffer.length > 0 && processed < batchSize) {
+      const raw = state.wsMessageBuffer.shift();
+      try {
+        const msg = JSON.parse(raw);
+        handleChatMessage(msg);
+      } catch (e) {
+        // Non-JSON text fallback
+        addChatMessage('MERLIN', raw);
+      }
+      processed++;
+    }
+
+    if (state.wsMessageBuffer.length > 0) {
+      // More messages to process — schedule on next frame
+      requestAnimationFrame(processMessageBuffer);
+    } else {
+      state.wsBufferProcessing = false;
+    }
+  }
+
   function handleChatMessage(msg) {
-    // Expected message formats:
-    // { type: "stream_start" }
-    // { type: "stream_chunk", text: "..." }
-    // { type: "stream_end", audio_url?: "..." }
-    // { type: "message", sender: "MERLIN"|"CAPTAIN", text: "..." }
-    // { type: "transcription", text: "..." }
-    // { type: "audio", url: "..." }
-    // { type: "error", text: "..." }
+    // Server message formats (actual from server.py):
+    //   { type: "text", content: "..." }     — streamed text chunks
+    //   { type: "done" }                     — end of response
+    //   { type: "transcription", text: "..." }
+    //   { type: "tts_audio", size: N }       — precedes binary TTS frame
+    //   { type: "error", content: "..." }
+    //
+    // Also support legacy client-side formats for compatibility:
+    //   { type: "stream_start" }
+    //   { type: "stream_chunk", text: "..." }
+    //   { type: "stream_end" }
+    //   { type: "message", sender, text }
 
     switch (msg.type) {
+      // ── Server wire format ──
+      case 'text':
+        // Server sends { type: "text", content: "..." } for streaming chunks
+        if (!state.streamingMsgEl) startStreamingMessage();
+        appendStreamingChunk(msg.content || '');
+        // Once first token arrives, switch from thinking to idle/default
+        if (state.voiceMode === 'thinking') setVoiceMode('idle');
+        break;
+
+      case 'done':
+        // Server signals end of Claude response
+        finishStreamingMessage();
+        // Stay in speaking mode if TTS is still playing, otherwise idle
+        if (!state.isPlayingAudio && state.audioQueue.length === 0) {
+          setVoiceMode('idle');
+        }
+        break;
+
+      // ── Legacy / compatibility formats ──
       case 'stream_start':
         startStreamingMessage();
         break;
@@ -401,7 +643,9 @@
 
       case 'stream_end':
         finishStreamingMessage();
-        setVoiceMode('idle');
+        if (!state.isPlayingAudio && state.audioQueue.length === 0) {
+          setVoiceMode('idle');
+        }
         break;
 
       case 'message':
@@ -410,8 +654,11 @@
         break;
 
       case 'transcription':
-        addChatMessage('CAPTAIN', msg.text || '');
-        setVoiceMode('processing');
+        addChatMessage('CAPTAIN', msg.text || '', {
+          id: `transcription-${msg.text}`,
+        });
+        setVoiceMode('thinking');
+        showThinkingIndicator();
         break;
 
       case 'audio_url':
@@ -423,14 +670,22 @@
         break;
 
       case 'error':
-        addSystemMessage(`ERROR: ${msg.content || msg.text || 'Unknown error'}`);
+        removeThinkingIndicator();
+        finishStreamingMessage();
+        const errText = msg.content || msg.text || 'Unknown error';
+        // Show transcription errors with more context
+        if (errText.toLowerCase().includes('transcri')) {
+          addSystemMessage(`STT WARNING: ${errText}`);
+        } else {
+          addSystemMessage(`ERROR: ${errText}`);
+        }
         setVoiceMode('idle');
         break;
 
       default:
-        // Fallback: if there's text, show it as a MERLIN message
-        if (msg.text) {
-          addChatMessage(msg.sender || 'MERLIN', msg.text);
+        // Fallback: if there's text or content, show it
+        if (msg.text || msg.content) {
+          addChatMessage(msg.sender || 'MERLIN', msg.text || msg.content);
         }
     }
   }
@@ -441,7 +696,11 @@
       addSystemMessage('Cannot send: MERLIN terminal offline.');
       return;
     }
+    // Barge-in: stop any playing TTS when user sends text
+    bargeIn();
     addChatMessage('CAPTAIN', text);
+    setVoiceMode('thinking');
+    showThinkingIndicator();
     state.chatWs.send(JSON.stringify({ type: 'text', text }));
   }
 
@@ -458,6 +717,13 @@
     }
   });
 
+  // Barge-in on typing while TTS is playing
+  dom.chatInput.addEventListener('input', () => {
+    if (state.isPlayingAudio || state.audioQueue.length > 0) {
+      bargeIn();
+    }
+  });
+
   // ═══════════════════════════════════════════════════════
   //  VOICE INPUT SYSTEM
   // ═══════════════════════════════════════════════════════
@@ -467,8 +733,8 @@
     const btn = dom.pttButton;
     const txt = dom.voiceStatusText;
 
-    btn.classList.remove('recording', 'processing', 'speaking');
-    txt.classList.remove('recording', 'processing', 'speaking');
+    btn.classList.remove('recording', 'processing', 'speaking', 'thinking');
+    txt.classList.remove('recording', 'processing', 'speaking', 'thinking');
 
     switch (mode) {
       case 'recording':
@@ -481,10 +747,15 @@
         txt.classList.add('processing');
         txt.textContent = 'PROCESSING...';
         break;
+      case 'thinking':
+        btn.classList.add('thinking');
+        txt.classList.add('thinking');
+        txt.textContent = 'MERLIN THINKING...';
+        break;
       case 'speaking':
         btn.classList.add('speaking');
         txt.classList.add('speaking');
-        txt.textContent = 'MERLIN SPEAKING...';
+        txt.textContent = 'MERLIN SPEAKING';
         break;
       default:
         txt.textContent = 'IDLE';
@@ -493,6 +764,9 @@
 
   async function startRecording() {
     if (state.voiceMode === 'recording') return;
+
+    // Barge-in: stop TTS if MERLIN is speaking
+    bargeIn();
 
     try {
       if (!state.audioStream) {
@@ -711,6 +985,7 @@
   async function playNextAudio() {
     if (state.audioQueue.length === 0) {
       state.isPlayingAudio = false;
+      state.currentAudio = null;
       if (state.voiceMode === 'speaking') setVoiceMode('idle');
       return;
     }
@@ -721,16 +996,20 @@
     const blob = state.audioQueue.shift();
     const url = URL.createObjectURL(blob);
 
-    // Use a fresh Audio element per clip to avoid stale event listeners
+    // Use a fresh Audio element per clip to chain smoothly
     const audio = new Audio(url);
-    dom.ttsAudio.pause();
-    dom.ttsAudio = audio;
+    audio.volume = state.ttsVolume;
+    state.currentAudio = audio;
+
+    // Pre-buffer: start loading immediately
+    audio.preload = 'auto';
 
     let advanced = false;
     function advance() {
       if (advanced) return;
       advanced = true;
       URL.revokeObjectURL(url);
+      // Chain to next clip immediately for gapless playback
       playNextAudio();
     }
 
@@ -748,6 +1027,18 @@
     }
   }
 
+  // ── Volume control ─────────────────────────────────────
+
+  if (dom.ttsVolume) {
+    dom.ttsVolume.addEventListener('input', (e) => {
+      state.ttsVolume = parseFloat(e.target.value);
+      // Apply to currently playing audio immediately
+      if (state.currentAudio) {
+        state.currentAudio.volume = state.ttsVolume;
+      }
+    });
+  }
+
   // ═══════════════════════════════════════════════════════
   //  STATUS POLLING
   // ═══════════════════════════════════════════════════════
@@ -758,16 +1049,21 @@
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
-      // Expected: { simconnect: bool, whisper: bool, chromadb: bool, claude: bool }
-      setLed(dom.statusSim,     data.simconnect ? 'green' : 'red');
-      setLed(dom.statusWhisper,  data.whisper    ? 'green' : 'red');
-      setLed(dom.statusChroma,   data.chromadb   ? 'green' : 'red');
-      setLed(dom.statusClaude,   data.claude     ? 'green' : 'red');
+      // Map server response fields to UI LEDs
+      // Server returns: sim_connected, whisper_available, chromadb_available, elevenlabs_configured
+      setLed(dom.statusSim,     data.sim_connected       ? 'green' : 'red');
+      setLed(dom.statusWhisper,  data.whisper_available   ? 'green' : 'red');
+      setLed(dom.statusChroma,   data.chromadb_available  ? 'green' : 'red');
+      // Claude is available if we got a valid status response (API key is loaded)
+      setLed(dom.statusClaude,   data.claude_model        ? 'green' : 'amber');
+
+      updateConnectionQuality();
     } catch {
       setLed(dom.statusSim,     'red');
       setLed(dom.statusWhisper,  'red');
       setLed(dom.statusChroma,   'red');
       setLed(dom.statusClaude,   'red');
+      updateConnectionQuality();
     }
   }
 
@@ -804,6 +1100,8 @@
     setInterval(pollStatus, STATUS_POLL_MS);
 
     addSystemMessage('MERLIN AI Co-Pilot initializing...');
+    addSystemMessage('Spacebar = push-to-talk (when chat input not focused).');
+    updateConnectionQuality();
   }
 
   // Start when DOM is ready (it already is since script is at end of body)

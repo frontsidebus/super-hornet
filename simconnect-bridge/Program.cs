@@ -2,21 +2,27 @@ using System.Text.Json;
 using SimConnectBridge;
 
 // ---------------------------------------------------------------------------
-//  MERLIN SimConnect Bridge — Entry Point
+//  MERLIN SimConnect Bridge -- Entry Point
 //  Connects to MSFS 2024 via SimConnect and broadcasts telemetry over WebSocket.
+//
+//  The bridge automatically reconnects when MSFS is restarted -- no manual
+//  restart required.  If SimConnect is not registered (COM error 0xe0434352),
+//  it logs a diagnostic message and retries.
 // ---------------------------------------------------------------------------
 
-Console.WriteLine("=== MERLIN SimConnect Bridge ===");
-Console.WriteLine();
+Log("INFO", "=== MERLIN SimConnect Bridge ===");
 
 // Load configuration
 var config = LoadConfiguration();
 
-string appName = config.GetProperty("SimConnect").GetProperty("AppName").GetString() ?? "MERLIN SimConnect Bridge";
+string appName = config.GetProperty("SimConnect").GetProperty("AppName").GetString()
+    ?? "MERLIN SimConnect Bridge";
 int highHz = config.GetProperty("SimConnect").GetProperty("HighFrequencyHz").GetInt32();
 int lowHz = config.GetProperty("SimConnect").GetProperty("LowFrequencyHz").GetInt32();
 string wsHost = config.GetProperty("WebSocket").GetProperty("Host").GetString() ?? "0.0.0.0";
 int wsPort = config.GetProperty("WebSocket").GetProperty("Port").GetInt32();
+
+Log("INFO", $"Config: HF={highHz}Hz, LF={lowHz}Hz, WS={wsHost}:{wsPort}");
 
 // Set up cancellation for graceful shutdown
 using var cts = new CancellationTokenSource();
@@ -24,7 +30,7 @@ using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = true;
-    Console.WriteLine("\n[Bridge] Shutdown requested...");
+    Log("INFO", "Shutdown requested...");
     cts.Cancel();
 };
 
@@ -45,20 +51,16 @@ simConnect.StateUpdated += state => wsServer.BroadcastState(state);
 
 simConnect.ConnectionChanged += connected =>
 {
-    Console.WriteLine($"[Bridge] SimConnect connected: {connected}");
+    Log("INFO", $"SimConnect connected: {connected}");
 };
 
-// Connect with retry (blocks until connected or cancelled)
+// Connect with retry -- the ConnectWithRetryAsync loop now handles
+// MSFS crashes/restarts automatically by re-entering the retry loop
+// when the connection is lost.
 try
 {
-    Console.WriteLine($"[Bridge] Attempting SimConnect connection as \"{appName}\"...");
+    Log("INFO", $"Attempting SimConnect connection as \"{appName}\"...");
     await simConnect.ConnectWithRetryAsync(cts.Token);
-    Console.WriteLine("[Bridge] SimConnect connected. Broadcasting telemetry.");
-    Console.WriteLine("[Bridge] Press Ctrl+C to shut down.");
-    Console.WriteLine();
-
-    // Keep alive until cancellation
-    await Task.Delay(Timeout.Infinite, cts.Token);
 }
 catch (OperationCanceledException)
 {
@@ -66,18 +68,24 @@ catch (OperationCanceledException)
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"[Bridge] Fatal error: {ex.Message}");
-    Console.WriteLine(ex.StackTrace);
+    Log("ERROR", $"Fatal error: {ex.Message}");
+    Log("ERROR", ex.StackTrace ?? "(no stack trace)");
 }
 
-Console.WriteLine("[Bridge] Shutting down...");
+Log("INFO", "Shutting down...");
 simConnect.Disconnect();
 wsServer.Stop();
-Console.WriteLine("[Bridge] Goodbye.");
+Log("INFO", "Goodbye.");
 
 // ---------------------------------------------------------------------------
-//  Configuration loader
+//  Helpers
 // ---------------------------------------------------------------------------
+
+static void Log(string level, string message)
+{
+    var ts = DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+    Console.WriteLine($"{ts} [{level}] Bridge: {message}");
+}
 
 static JsonElement LoadConfiguration()
 {
@@ -85,7 +93,7 @@ static JsonElement LoadConfiguration()
 
     if (!File.Exists(configPath))
     {
-        Console.WriteLine($"[Bridge] WARNING: {configPath} not found. Using defaults.");
+        Log("WARN", $"{configPath} not found. Using defaults.");
         var defaults = """
         {
           "SimConnect": {

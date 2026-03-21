@@ -27,6 +27,18 @@ class Settings(BaseSettings):
         default="claude-sonnet-4-20250514",
         description="Claude model identifier",
     )
+    claude_max_tokens: int = Field(
+        default=1024,
+        description="Default max tokens for Claude responses (keeps comms tactical)",
+    )
+    claude_max_tokens_briefing: int = Field(
+        default=2048,
+        description="Max tokens for briefings, checklists, and flight plans",
+    )
+    claude_max_history: int = Field(
+        default=20,
+        description="Max message pairs to retain in conversation history",
+    )
 
     # --- SimConnect bridge ---------------------------------------------------
     simconnect_ws_host: str = Field(
@@ -44,7 +56,7 @@ class Settings(BaseSettings):
 
     # --- Whisper STT ---------------------------------------------------------
     whisper_model: str = Field(
-        default="base.en",
+        default="small",
         description="Whisper model size (used by Docker service, not locally)",
     )
     whisper_url: str = Field(
@@ -81,7 +93,7 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def _build_derived(self) -> "Settings":
+    def _build_derived(self) -> Settings:
         # Construct the bridge URL from host + port when not explicitly set
         if not self.simconnect_bridge_url:
             self.simconnect_bridge_url = (

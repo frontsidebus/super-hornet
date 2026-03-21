@@ -141,7 +141,60 @@ html, body {
 .header-right {
   display: flex;
   align-items: center;
+  gap: 12px;
 }
+
+.header-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border-bright);
+}
+
+/* ── CONNECTION QUALITY INDICATOR ────────────────────── */
+
+.conn-quality-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.conn-quality-led {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transition: background 0.3s, box-shadow 0.3s;
+}
+
+.conn-quality-led.conn-good {
+  background: var(--green);
+  box-shadow: 0 0 4px var(--green-glow), 0 0 10px var(--green-glow);
+}
+
+.conn-quality-led.conn-degraded {
+  background: var(--amber);
+  box-shadow: 0 0 4px var(--amber-glow), 0 0 10px var(--amber-glow);
+  animation: pulse-degraded 1.5s ease-in-out infinite;
+}
+
+.conn-quality-led.conn-offline {
+  background: var(--red);
+  box-shadow: 0 0 4px var(--red-glow);
+}
+
+@keyframes pulse-degraded {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+
+.conn-quality-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+}
+
+/* ── STATUS LEDs ─────────────────────────────────────── */
 
 .status-led-group {
   display: flex;
@@ -379,6 +432,30 @@ html, body {
   text-align: center;
 }
 
+/* ── Thinking indicator ──────────────────────────────── */
+
+.thinking-indicator .thinking-dots::after {
+  content: '';
+  animation: thinking-ellipsis 1.5s steps(4, end) infinite;
+}
+
+@keyframes thinking-ellipsis {
+  0%  { content: ''; }
+  25% { content: '.'; }
+  50% { content: '..'; }
+  75% { content: '...'; }
+}
+
+/* Fallback for browsers that don't animate content — use opacity pulse */
+.thinking-indicator {
+  animation: thinking-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
 /* Typing cursor for streaming */
 .typing-cursor {
   display: inline-block;
@@ -502,6 +579,14 @@ html, body {
   animation: pulse-processing 1s ease-in-out infinite;
 }
 
+.ptt-button.thinking {
+  border-color: var(--amber);
+  color: var(--amber);
+  background: rgba(240, 192, 64, 0.04);
+  box-shadow: 0 0 14px var(--amber-glow);
+  animation: pulse-processing 1.5s ease-in-out infinite;
+}
+
 .ptt-button.speaking {
   border-color: var(--cyan);
   color: var(--cyan);
@@ -569,9 +654,75 @@ html, body {
   animation: blink-slow 1s ease-in-out infinite;
 }
 
+.voice-status-text.thinking {
+  color: var(--amber);
+  text-shadow: 0 0 6px var(--amber-glow);
+  animation: blink-slow 1.5s ease-in-out infinite;
+}
+
 .voice-status-text.speaking {
   color: var(--cyan);
   text-shadow: 0 0 8px var(--cyan-glow);
+}
+
+/* ── VOLUME CONTROL ───────────────────────────────────── */
+
+.volume-control {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 60px;
+}
+
+.volume-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--text-dim);
+}
+
+.volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 60px;
+  height: 4px;
+  background: rgba(240, 192, 64, 0.15);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--amber-dim);
+  border: 1px solid var(--amber);
+  cursor: pointer;
+  transition: background 0.2s, box-shadow 0.2s;
+}
+
+.volume-slider::-webkit-slider-thumb:hover {
+  background: var(--amber);
+  box-shadow: 0 0 8px var(--amber-glow);
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--amber-dim);
+  border: 1px solid var(--amber);
+  cursor: pointer;
+}
+
+.volume-slider::-moz-range-track {
+  height: 4px;
+  background: rgba(240, 192, 64, 0.15);
+  border-radius: 2px;
 }
 
 /* ── RESPONSIVE ───────────────────────────────────────── */
@@ -597,6 +748,14 @@ html, body {
   .ptt-button .mic-icon {
     width: 22px;
     height: 22px;
+  }
+
+  .conn-quality-indicator {
+    display: none;
+  }
+
+  .header-divider {
+    display: none;
   }
 }
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from .sim_client import FlightPhase, SimState
 
@@ -61,7 +61,6 @@ class FlightPhaseDetector:
         t = self._thresholds
         on_ground = s.on_ground
         gs = s.speeds.ground_speed
-        ias = s.speeds.indicated_airspeed
         vs = s.speeds.vertical_speed
         agl = s.position.altitude_agl
         gear = s.surfaces.gear_handle

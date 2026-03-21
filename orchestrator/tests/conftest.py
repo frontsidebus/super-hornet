@@ -11,14 +11,17 @@ import pytest
 from orchestrator.sim_client import (
     Attitude,
     AutopilotState,
+    ConnectionState,
     EngineData,
     Engines,
     Environment,
     FlightPhase,
     FuelState,
+    HealthMonitor,
     Position,
     RadioState,
     SimState,
+    SubsystemHealth,
     SurfaceState,
     Speeds,
 )

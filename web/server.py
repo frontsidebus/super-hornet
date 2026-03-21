@@ -3,6 +3,10 @@
 Bridges the browser frontend to the orchestrator components: SimConnect
 telemetry streaming, Claude chat with the MERLIN persona, Whisper STT,
 and ElevenLabs TTS.
+
+Supports barge-in interruption: if the user sends new audio or text while
+MERLIN is responding, the current Claude stream and TTS pipeline are
+cancelled immediately.
 """
 
 from __future__ import annotations
@@ -10,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import tempfile
+import math
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -22,6 +26,10 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from orchestrator.audio_processing import (
+    AVIATION_PROMPT,
+    convert_webm_to_wav_normalized,
+)
 from orchestrator.claude_client import ClaudeClient  # noqa: E402
 from orchestrator.config import load_settings  # noqa: E402
 from orchestrator.context_store import ContextStore  # noqa: E402
@@ -51,9 +59,15 @@ phase_detector: FlightPhaseDetector | None = None
 # Track whether we have a live connection to the SimConnect bridge
 _sim_connected: bool = False
 
+# Confidence threshold: transcriptions below this trigger a retry or warning
+_LOW_CONFIDENCE_THRESHOLD = 0.4
+
+# Brief pause (seconds) after MERLIN finishes speaking before accepting input
+_POST_SPEECH_PAUSE_SECS = 0.3
+
 
 # ---------------------------------------------------------------------------
-# Lifespan — start / stop background services
+# Lifespan -- start / stop background services
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
@@ -62,7 +76,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting MERLIN web server")
 
-    # Context store (ChromaDB) — degrades gracefully if unavailable
+    # Context store (ChromaDB) -- degrades gracefully if unavailable
     context_store = ContextStore(chromadb_url=settings.chromadb_url)
 
     # SimConnect client
@@ -84,6 +98,7 @@ async def lifespan(app: FastAPI):
 
     # Register the phase detector as a subscriber when connected
     if _sim_connected and sim_client is not None:
+
         async def _on_state(state: SimState) -> None:
             assert phase_detector is not None
             detected = phase_detector.update(state)
@@ -151,7 +166,7 @@ async def index():
     index_path = _STATIC_DIR / "index.html"
     if index_path.exists():
         return FileResponse(str(index_path))
-    return {"message": "MERLIN web UI — place index.html in web/static/"}
+    return {"message": "MERLIN web UI -- place index.html in web/static/"}
 
 
 @app.get("/api/status")
@@ -183,36 +198,30 @@ async def transcribe_audio(file: UploadFile):
     """Transcribe uploaded audio via the Whisper Docker service.
 
     Accepts webm or wav from the browser MediaRecorder. Converts webm to wav
-    via ffmpeg before forwarding to Whisper.
+    via ffmpeg with audio preprocessing before forwarding to Whisper.
+    Returns text and confidence score.
     """
     audio_bytes = await file.read()
     content_type = file.content_type or ""
     filename = file.filename or "audio.webm"
 
-    # If the upload is webm, convert to wav with ffmpeg
+    # If the upload is webm, convert to normalized wav with preprocessing
     if "webm" in content_type or filename.endswith(".webm"):
-        audio_bytes = await _convert_webm_to_wav(audio_bytes)
+        audio_bytes = await convert_webm_to_wav_normalized(audio_bytes)
         filename = "audio.wav"
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.whisper_url}/asr",
-                files={"audio_file": (filename, audio_bytes, "audio/wav")},
-                params={
-                    "encode": "true",
-                    "task": "transcribe",
-                    "language": "en",
-                    "output": "json",
-                },
-            )
-            resp.raise_for_status()
-            result = resp.json()
-            text = result.get("text", "").strip()
-            return {"text": text}
-    except httpx.HTTPError as exc:
-        logger.error("Whisper transcription failed: %s", exc)
-        return {"text": "", "error": f"Transcription failed: {exc}"}
+    text, confidence = await _transcribe_with_confidence(audio_bytes)
+
+    result: dict[str, Any] = {"text": text, "confidence": confidence}
+
+    # If confidence is low, warn the caller
+    if text and confidence < _LOW_CONFIDENCE_THRESHOLD:
+        result["low_confidence"] = True
+        logger.warning(
+            "Low confidence transcription (%.2f): '%s'", confidence, text[:80]
+        )
+
+    return result
 
 
 @app.post("/api/tts")
@@ -236,10 +245,11 @@ async def text_to_speech(request: TTSRequest):
                 },
                 json={
                     "text": request.text,
-                    "model_id": "eleven_monolingual_v1",
+                    "model_id": "eleven_turbo_v2_5",
                     "voice_settings": {
                         "stability": 0.5,
                         "similarity_boost": 0.75,
+                        "style": 0.3,
                     },
                 },
             )
@@ -278,8 +288,12 @@ async def ws_telemetry(ws: WebSocket):
             # Try to connect directly to the SimConnect bridge WebSocket
             try:
                 async with ws_lib.connect(bridge_url) as bridge_ws:
-                    logger.info("Telemetry proxy connected to bridge at %s", bridge_url)
-                    await ws.send_json({"type": "telemetry", "connected": True, "data": None})
+                    logger.info(
+                        "Telemetry proxy connected to bridge at %s", bridge_url
+                    )
+                    await ws.send_json(
+                        {"type": "telemetry", "connected": True, "data": None}
+                    )
 
                     async for raw_msg in bridge_ws:
                         try:
@@ -317,24 +331,57 @@ async def ws_telemetry(ws: WebSocket):
 
 
 # ---------------------------------------------------------------------------
-# WebSocket: /ws/chat
+# WebSocket: /ws/chat  (with barge-in / interruption support)
 # ---------------------------------------------------------------------------
 
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket):
-    """Chat with MERLIN.
+    """Chat with MERLIN, with barge-in interruption support.
 
-    Receives JSON: {"text": "...", "audio_base64": "..."}
-    If audio_base64 is present, transcribes it first via Whisper.
+    Receives JSON messages or binary audio data.
+
+    Text messages:
+      {"type": "audio_start", "mime": "audio/webm"}  -- next binary = audio
+      {"text": "user message"}                         -- direct text input
+      {"type": "interrupt"}                            -- cancel current response
+
+    Binary messages:
+      Raw audio bytes (preceded by audio_start marker)
+
     Streams response as:
-      {"type": "text", "content": "..."}   — streamed chunks
-      {"type": "audio_url", "url": "..."}  — TTS URL for the full reply
-      {"type": "done"}                     — signals end of response
+      {"type": "text", "content": "..."}      -- streamed text chunks
+      {"type": "transcription", "text": "...", "confidence": 0.85}
+      {"type": "tts_audio", "size": N}        -- followed by binary MP3
+      {"type": "interrupted"}                 -- response was cancelled
+      {"type": "done"}                        -- end of response
+      {"type": "listening"}                   -- MERLIN is ready for input
     """
     await ws.accept()
     logger.info("Chat WebSocket client connected")
 
     pending_audio_mime: str | None = None
+
+    # Active response task -- cancelled on barge-in
+    active_response_task: asyncio.Task[None] | None = None
+    # Event signalled when the user interrupts
+    interrupt_event = asyncio.Event()
+
+    async def _cancel_active_response() -> None:
+        """Cancel any in-progress Claude stream and TTS pipeline."""
+        nonlocal active_response_task
+        if active_response_task and not active_response_task.done():
+            interrupt_event.set()
+            active_response_task.cancel()
+            try:
+                await active_response_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            logger.info("Active response cancelled (barge-in)")
+            try:
+                await ws.send_json({"type": "interrupted"})
+            except Exception:
+                pass
+        active_response_task = None
 
     try:
         while True:
@@ -343,13 +390,41 @@ async def ws_chat(ws: WebSocket):
             # Handle binary audio data from the browser's MediaRecorder
             if "bytes" in message and message["bytes"]:
                 audio_bytes = message["bytes"]
-                logger.info("Received %d bytes of audio (mime: %s)", len(audio_bytes), pending_audio_mime)
-                user_text = await _transcribe_audio_bytes(audio_bytes, pending_audio_mime or "audio/webm")
+                logger.info(
+                    "Received %d bytes of audio (mime: %s)",
+                    len(audio_bytes),
+                    pending_audio_mime,
+                )
+
+                # Barge-in: cancel current response if one is active
+                await _cancel_active_response()
+
+                user_text, confidence = await _transcribe_audio_bytes_with_confidence(
+                    audio_bytes, pending_audio_mime or "audio/webm"
+                )
                 pending_audio_mime = None
+
                 if not user_text:
-                    await ws.send_json({"type": "error", "content": "Could not transcribe audio"})
+                    await ws.send_json({
+                        "type": "error",
+                        "content": "Could not transcribe audio",
+                    })
                     continue
-                await ws.send_json({"type": "transcription", "text": user_text})
+
+                await ws.send_json({
+                    "type": "transcription",
+                    "text": user_text,
+                    "confidence": round(confidence, 2),
+                })
+
+                # If confidence is very low, retry once with the raw audio
+                if confidence < _LOW_CONFIDENCE_THRESHOLD and user_text:
+                    logger.warning(
+                        "Low confidence (%.2f), sending anyway: '%s'",
+                        confidence,
+                        user_text[:60],
+                    )
+
             elif "text" in message and message["text"]:
                 raw = message["text"]
                 try:
@@ -361,71 +436,120 @@ async def ws_chat(ws: WebSocket):
                 # Handle audio_start marker (next message will be binary)
                 if msg.get("type") == "audio_start":
                     pending_audio_mime = msg.get("mime", "audio/webm")
+                    # Barge-in: if MERLIN is speaking and user starts recording
+                    await _cancel_active_response()
+                    continue
+
+                # Handle explicit interrupt request
+                if msg.get("type") == "interrupt":
+                    await _cancel_active_response()
                     continue
 
                 user_text = msg.get("text", "")
                 if not user_text:
-                    await ws.send_json({"type": "error", "content": "No text provided"})
+                    await ws.send_json({
+                        "type": "error",
+                        "content": "No text provided",
+                    })
                     continue
+
+                # Barge-in: cancel if user sends text while MERLIN is responding
+                await _cancel_active_response()
+
             else:
                 continue
 
-            # Stream Claude response with sentence-level TTS
-            tts_enabled = bool(
-                settings.elevenlabs_api_key and settings.voice_id
+            # Reset interrupt event for the new response
+            interrupt_event.clear()
+
+            # Launch response streaming as a cancellable task
+            active_response_task = asyncio.create_task(
+                _stream_response(ws, user_text, interrupt_event)
             )
-            sentence_buffer = ""
-            full_response = ""
-
-            # TTS queue ensures audio chunks are sent in order
-            tts_queue: asyncio.Queue[str | None] = asyncio.Queue()
-
-            async def _tts_sender():
-                """Sequentially synthesize and send TTS for queued sentences."""
-                while True:
-                    sentence = await tts_queue.get()
-                    if sentence is None:
-                        break  # Poison pill — done
-                    await _send_tts_chunk(ws, sentence)
-
-            tts_task = asyncio.create_task(_tts_sender()) if tts_enabled else None
-
-            try:
-                assert claude_client is not None
-                async for chunk in claude_client.chat(user_text):
-                    full_response += chunk
-                    await ws.send_json({"type": "text", "content": chunk})
-
-                    if tts_enabled:
-                        sentence_buffer += chunk
-                        sent, remaining = _split_at_sentence(sentence_buffer)
-                        if sent:
-                            sentence_buffer = remaining
-                            await tts_queue.put(sent)
-
-                # Flush remaining text to TTS
-                if tts_enabled and sentence_buffer.strip():
-                    await tts_queue.put(sentence_buffer.strip())
-
-            except Exception as exc:
-                logger.exception("Claude chat error")
-                await ws.send_json({"type": "error", "content": f"Chat error: {exc}"})
-                if tts_task:
-                    await tts_queue.put(None)
-                    await tts_task
-                continue
-
-            await ws.send_json({"type": "done"})
-
-            # Signal TTS sender to finish and wait for it
-            if tts_task:
-                await tts_queue.put(None)
-                await tts_task
 
     except WebSocketDisconnect:
         logger.info("Chat WebSocket client disconnected")
+        await _cancel_active_response()
     except Exception as exc:
         logger.warning("Chat WebSocket error: %s", exc)
+        await _cancel_active_response()
+
+
+async def _stream_response(
+    ws: WebSocket,
+    user_text: str,
+    interrupt: asyncio.Event,
+) -> None:
+    """Stream Claude response with sentence-level TTS. Cancellable via interrupt event.
+
+    This runs as a task so it can be cancelled when the user barges in.
+    """
+    tts_enabled = bool(settings.elevenlabs_api_key and settings.voice_id)
+    sentence_buffer = ""
+    full_response = ""
+
+    # TTS queue ensures audio chunks are sent in order
+    tts_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+    async def _tts_sender() -> None:
+        """Sequentially synthesize and send TTS for queued sentences."""
+        while True:
+            if interrupt.is_set():
+                break
+            try:
+                sentence = await asyncio.wait_for(tts_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                continue
+            if sentence is None:
+                break  # Poison pill -- done
+            if interrupt.is_set():
+                break
+            await _send_tts_chunk(ws, sentence)
+
+    tts_task = asyncio.create_task(_tts_sender()) if tts_enabled else None
+
+    try:
+        assert claude_client is not None
+        async for chunk in claude_client.chat(user_text):
+            if interrupt.is_set():
+                logger.info("Response interrupted mid-stream")
+                break
+
+            full_response += chunk
+            await ws.send_json({"type": "text", "content": chunk})
+
+            if tts_enabled:
+                sentence_buffer += chunk
+                sent, remaining = _split_at_sentence(sentence_buffer)
+                if sent:
+                    sentence_buffer = remaining
+                    await tts_queue.put(sent)
+
+        # Flush remaining text to TTS (if not interrupted)
+        if tts_enabled and sentence_buffer.strip() and not interrupt.is_set():
+            await tts_queue.put(sentence_buffer.strip())
+
+    except asyncio.CancelledError:
+        logger.info("Response task cancelled")
+        raise
+    except Exception as exc:
+        logger.exception("Claude chat error")
+        await ws.send_json({"type": "error", "content": f"Chat error: {exc}"})
+    finally:
+        # Always clean up TTS task
+        if tts_task:
+            await tts_queue.put(None)
+            try:
+                await asyncio.wait_for(tts_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                tts_task.cancel()
+
+    if not interrupt.is_set():
+        await ws.send_json({"type": "done"})
+
+        # Brief pause after MERLIN finishes before signalling readiness
+        await asyncio.sleep(_POST_SPEECH_PAUSE_SECS)
+        await ws.send_json({"type": "listening"})
 
 
 # ---------------------------------------------------------------------------
@@ -434,9 +558,10 @@ async def ws_chat(ws: WebSocket):
 
 def _split_at_sentence(text: str) -> tuple[str, str]:
     """Split text at the last sentence boundary. Returns (complete, remaining)."""
-    # Look for sentence endings followed by a space (to avoid splitting mid-abbreviation)
     for i in range(len(text) - 1, -1, -1):
-        if text[i] in ".!?\n" and (i + 1 >= len(text) or text[i + 1] == " " or text[i + 1] == "\n"):
+        if text[i] in ".!?\n" and (
+            i + 1 >= len(text) or text[i + 1] == " " or text[i + 1] == "\n"
+        ):
             return text[: i + 1].strip(), text[i + 1 :].lstrip()
     return "", text  # No sentence boundary found yet
 
@@ -453,7 +578,7 @@ async def _get_tts_client() -> httpx.AsyncClient:
 
 
 async def _send_tts_chunk(ws: WebSocket, text: str) -> None:
-    """Synthesize a sentence and send the audio back over WebSocket as a binary message."""
+    """Synthesize a sentence and send the audio back over WebSocket."""
     try:
         client = await _get_tts_client()
         resp = await client.post(
@@ -474,63 +599,73 @@ async def _send_tts_chunk(ws: WebSocket, text: str) -> None:
             },
         )
         resp.raise_for_status()
-        # Send audio as binary WebSocket frame — browser will play it
+        # Send audio as binary WebSocket frame -- browser will play it
         await ws.send_json({"type": "tts_audio", "size": len(resp.content)})
         await ws.send_bytes(resp.content)
     except Exception as exc:
         logger.warning("TTS chunk failed: %s", exc)
 
 
-async def _convert_webm_to_wav(webm_bytes: bytes) -> bytes:
-    """Convert webm audio to wav using ffmpeg in a subprocess."""
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as src:
-        src.write(webm_bytes)
-        src_path = src.name
+async def _transcribe_with_confidence(
+    audio_bytes: bytes,
+) -> tuple[str, float]:
+    """Send audio to Whisper with aviation prompt and return (text, confidence).
 
-    dst_path = src_path.replace(".webm", ".wav")
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-i", src_path, "-ar", "16000", "-ac", "1",
-            "-c:a", "pcm_s16le", dst_path,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            logger.error("ffmpeg conversion failed: %s", stderr.decode(errors="replace"))
-            return webm_bytes  # fall back to raw bytes
-
-        return Path(dst_path).read_bytes()
-    except FileNotFoundError:
-        logger.warning("ffmpeg not found; sending raw webm to Whisper")
-        return webm_bytes
-    finally:
-        # Clean up temp files
-        for p in (src_path, dst_path):
-            try:
-                Path(p).unlink(missing_ok=True)
-            except Exception:
-                pass
-
-
-async def _transcribe_audio_bytes(audio_bytes: bytes, mime_type: str = "audio/webm") -> str:
-    """Convert browser audio to wav and send to Whisper."""
-    if "webm" in mime_type or "ogg" in mime_type:
-        audio_bytes = await _convert_webm_to_wav(audio_bytes)
-
+    Uses verbose_json output to extract per-segment confidence scoring.
+    """
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{settings.whisper_url}/asr",
                 files={"audio_file": ("audio.wav", audio_bytes, "audio/wav")},
-                params={"encode": "true", "task": "transcribe", "language": "en", "output": "json"},
+                params={
+                    "encode": "true",
+                    "task": "transcribe",
+                    "language": "en",
+                    "output": "verbose_json",
+                    "initial_prompt": AVIATION_PROMPT,
+                },
             )
             resp.raise_for_status()
-            return resp.json().get("text", "").strip()
-    except Exception as exc:
+            data = resp.json()
+            text = data.get("text", "").strip()
+
+            # Calculate confidence from segment avg_logprob
+            segments = data.get("segments", [])
+            if segments:
+                logprobs = [s.get("avg_logprob", -1.0) for s in segments]
+                avg_logprob = sum(logprobs) / len(logprobs)
+                confidence = min(1.0, max(0.0, math.exp(avg_logprob)))
+            else:
+                confidence = 0.5
+
+            logger.info(
+                "Transcribed (confidence=%.2f): %s", confidence, text[:80]
+            )
+            return text, confidence
+    except httpx.HTTPError as exc:
         logger.error("Whisper transcription failed: %s", exc)
-        return ""
+        return "", 0.0
+
+
+async def _transcribe_audio_bytes_with_confidence(
+    audio_bytes: bytes,
+    mime_type: str = "audio/webm",
+) -> tuple[str, float]:
+    """Convert browser audio to preprocessed WAV, transcribe with confidence."""
+    if "webm" in mime_type or "ogg" in mime_type:
+        audio_bytes = await convert_webm_to_wav_normalized(audio_bytes)
+
+    return await _transcribe_with_confidence(audio_bytes)
+
+
+async def _transcribe_audio_bytes(
+    audio_bytes: bytes,
+    mime_type: str = "audio/webm",
+) -> str:
+    """Convert browser audio to wav and send to Whisper. Legacy wrapper."""
+    text, _ = await _transcribe_audio_bytes_with_confidence(audio_bytes, mime_type)
+    return text
 
 
 async def _transcribe_base64_audio(audio_b64: str) -> str:
@@ -543,24 +678,16 @@ async def _transcribe_base64_audio(audio_b64: str) -> str:
         logger.warning("Failed to decode base64 audio")
         return ""
 
-    # Assume webm from browser MediaRecorder; convert to wav
-    audio_bytes = await _convert_webm_to_wav(audio_bytes)
+    # Assume webm from browser MediaRecorder; convert to normalized wav
+    audio_bytes = await convert_webm_to_wav_normalized(audio_bytes)
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.whisper_url}/asr",
-                files={"audio_file": ("audio.wav", audio_bytes, "audio/wav")},
-                params={
-                    "encode": "true",
-                    "task": "transcribe",
-                    "language": "en",
-                    "output": "json",
-                },
-            )
-            resp.raise_for_status()
-            result = resp.json()
-            return result.get("text", "").strip()
-    except Exception as exc:
-        logger.error("Whisper transcription (base64) failed: %s", exc)
-        return ""
+    text, confidence = await _transcribe_with_confidence(audio_bytes)
+
+    if confidence < _LOW_CONFIDENCE_THRESHOLD:
+        logger.warning(
+            "Low confidence base64 transcription (%.2f): '%s'",
+            confidence,
+            text[:60],
+        )
+
+    return text

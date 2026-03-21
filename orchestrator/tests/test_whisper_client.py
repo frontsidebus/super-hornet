@@ -1,13 +1,16 @@
-"""Tests for orchestrator.whisper_client — Whisper HTTP client with retry logic."""
+"""Tests for orchestrator.whisper_client -- Whisper HTTP client with retry logic."""
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
+from orchestrator.audio_processing import AVIATION_PROMPT
 from orchestrator.whisper_client import (
+    TranscriptionResult,
     WhisperClient,
     WhisperClientError,
     _DEFAULT_WHISPER_URL,
@@ -58,6 +61,14 @@ class TestWhisperClientInit:
         c = WhisperClient(language=None)
         assert c.language is None
 
+    def test_default_initial_prompt(self) -> None:
+        c = WhisperClient()
+        assert c.initial_prompt == AVIATION_PROMPT
+
+    def test_custom_initial_prompt(self) -> None:
+        c = WhisperClient(initial_prompt="custom terms")
+        assert c.initial_prompt == "custom terms"
+
 
 # ---------------------------------------------------------------------------
 # Successful transcription
@@ -65,7 +76,9 @@ class TestWhisperClientInit:
 
 
 class TestTranscribeSuccess:
-    def test_returns_stripped_text(self, whisper_client: WhisperClient, sample_audio: bytes) -> None:
+    def test_returns_stripped_text(
+        self, whisper_client: WhisperClient, sample_audio: bytes
+    ) -> None:
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.text = "  Hello, Captain.  \n"
         mock_response.raise_for_status = MagicMock()
@@ -76,7 +89,9 @@ class TestTranscribeSuccess:
         result = whisper_client.transcribe(sample_audio)
         assert result == "Hello, Captain."
 
-    def test_sends_correct_params(self, whisper_client: WhisperClient, sample_audio: bytes) -> None:
+    def test_sends_correct_params(
+        self, whisper_client: WhisperClient, sample_audio: bytes
+    ) -> None:
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.text = "text"
         mock_response.raise_for_status = MagicMock()
@@ -91,7 +106,29 @@ class TestTranscribeSuccess:
         assert call_args[1]["params"]["output"] == "json"
         assert call_args[1]["params"]["language"] == "fr"
 
-    def test_uses_default_language_when_not_overridden(self, whisper_client: WhisperClient, sample_audio: bytes) -> None:
+    def test_sends_task_and_initial_prompt(
+        self, whisper_client: WhisperClient, sample_audio: bytes
+    ) -> None:
+        """Verify that task=transcribe and initial_prompt are sent."""
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.text = "text"
+        mock_response.raise_for_status = MagicMock()
+
+        whisper_client._client = MagicMock()
+        whisper_client._client.post.return_value = mock_response
+
+        whisper_client.transcribe(sample_audio)
+
+        call_args = whisper_client._client.post.call_args
+        params = call_args[1]["params"]
+        assert params["task"] == "transcribe"
+        assert params["encode"] == "true"
+        assert "initial_prompt" in params
+        assert "ATIS" in params["initial_prompt"]
+
+    def test_uses_default_language_when_not_overridden(
+        self, whisper_client: WhisperClient, sample_audio: bytes
+    ) -> None:
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.text = "text"
         mock_response.raise_for_status = MagicMock()
@@ -118,13 +155,114 @@ class TestTranscribeSuccess:
 
 
 # ---------------------------------------------------------------------------
-# Retry logic — connection errors
+# Confidence scoring (transcribe_with_confidence)
+# ---------------------------------------------------------------------------
+
+
+class TestTranscribeWithConfidence:
+    def test_returns_transcription_result(
+        self, whisper_client: WhisperClient, sample_audio: bytes
+    ) -> None:
+        verbose_response = {
+            "text": "Set heading three six zero",
+            "language": "en",
+            "duration": 2.5,
+            "segments": [
+                {"text": "Set heading three six zero", "avg_logprob": -0.2},
+            ],
+        }
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = verbose_response
+        mock_response.raise_for_status = MagicMock()
+
+        whisper_client._client = MagicMock()
+        whisper_client._client.post.return_value = mock_response
+
+        result = whisper_client.transcribe_with_confidence(sample_audio)
+
+        assert isinstance(result, TranscriptionResult)
+        assert result.text == "Set heading three six zero"
+        assert result.language == "en"
+        assert result.duration_secs == 2.5
+        # exp(-0.2) ~ 0.819
+        assert 0.8 < result.confidence < 0.85
+
+    def test_low_confidence_from_bad_logprob(
+        self, whisper_client: WhisperClient, sample_audio: bytes
+    ) -> None:
+        verbose_response = {
+            "text": "garbled",
+            "language": "en",
+            "duration": 1.0,
+            "segments": [
+                {"text": "garbled", "avg_logprob": -1.5},
+            ],
+        }
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = verbose_response
+        mock_response.raise_for_status = MagicMock()
+
+        whisper_client._client = MagicMock()
+        whisper_client._client.post.return_value = mock_response
+
+        result = whisper_client.transcribe_with_confidence(sample_audio)
+        # exp(-1.5) ~ 0.223
+        assert result.confidence < 0.3
+
+    def test_default_confidence_when_no_segments(
+        self, whisper_client: WhisperClient, sample_audio: bytes
+    ) -> None:
+        verbose_response = {
+            "text": "hello",
+            "language": "en",
+            "duration": 0.5,
+            "segments": [],
+        }
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = verbose_response
+        mock_response.raise_for_status = MagicMock()
+
+        whisper_client._client = MagicMock()
+        whisper_client._client.post.return_value = mock_response
+
+        result = whisper_client.transcribe_with_confidence(sample_audio)
+        assert result.confidence == 0.5
+
+    def test_sends_verbose_json_output_format(
+        self, whisper_client: WhisperClient, sample_audio: bytes
+    ) -> None:
+        verbose_response = {
+            "text": "ok",
+            "language": "en",
+            "duration": 1.0,
+            "segments": [],
+        }
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = verbose_response
+        mock_response.raise_for_status = MagicMock()
+
+        whisper_client._client = MagicMock()
+        whisper_client._client.post.return_value = mock_response
+
+        whisper_client.transcribe_with_confidence(sample_audio)
+
+        call_args = whisper_client._client.post.call_args
+        assert call_args[1]["params"]["output"] == "verbose_json"
+
+
+# ---------------------------------------------------------------------------
+# Retry logic -- connection errors
 # ---------------------------------------------------------------------------
 
 
 class TestRetryOnConnectionError:
     @patch("orchestrator.whisper_client.time.sleep")
-    def test_retries_on_connect_error(self, mock_sleep: MagicMock, whisper_client: WhisperClient, sample_audio: bytes) -> None:
+    def test_retries_on_connect_error(
+        self,
+        mock_sleep: MagicMock,
+        whisper_client: WhisperClient,
+        sample_audio: bytes,
+    ) -> None:
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.text = "recovered"
         mock_response.raise_for_status = MagicMock()
@@ -142,7 +280,12 @@ class TestRetryOnConnectionError:
         assert mock_sleep.call_count == 2
 
     @patch("orchestrator.whisper_client.time.sleep")
-    def test_raises_after_max_retries(self, mock_sleep: MagicMock, whisper_client: WhisperClient, sample_audio: bytes) -> None:
+    def test_raises_after_max_retries(
+        self,
+        mock_sleep: MagicMock,
+        whisper_client: WhisperClient,
+        sample_audio: bytes,
+    ) -> None:
         whisper_client._client = MagicMock()
         whisper_client._client.post.side_effect = httpx.ConnectError("refused")
 
@@ -152,7 +295,12 @@ class TestRetryOnConnectionError:
         assert whisper_client._client.post.call_count == _MAX_RETRIES
 
     @patch("orchestrator.whisper_client.time.sleep")
-    def test_backoff_timing(self, mock_sleep: MagicMock, whisper_client: WhisperClient, sample_audio: bytes) -> None:
+    def test_backoff_timing(
+        self,
+        mock_sleep: MagicMock,
+        whisper_client: WhisperClient,
+        sample_audio: bytes,
+    ) -> None:
         whisper_client._client = MagicMock()
         whisper_client._client.post.side_effect = httpx.ConnectError("refused")
 
@@ -175,14 +323,21 @@ class TestRetryOnConnectionError:
 
 class TestNoRetryOn4xx:
     @patch("orchestrator.whisper_client.time.sleep")
-    def test_does_not_retry_on_400(self, mock_sleep: MagicMock, whisper_client: WhisperClient, sample_audio: bytes) -> None:
+    def test_does_not_retry_on_400(
+        self,
+        mock_sleep: MagicMock,
+        whisper_client: WhisperClient,
+        sample_audio: bytes,
+    ) -> None:
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 400
         mock_response.text = "Bad request"
 
         whisper_client._client = MagicMock()
         whisper_client._client.post.side_effect = httpx.HTTPStatusError(
-            "400", request=MagicMock(), response=mock_response,
+            "400",
+            request=MagicMock(),
+            response=mock_response,
         )
 
         with pytest.raises(WhisperClientError):
@@ -193,14 +348,21 @@ class TestNoRetryOn4xx:
         mock_sleep.assert_not_called()
 
     @patch("orchestrator.whisper_client.time.sleep")
-    def test_does_not_retry_on_422(self, mock_sleep: MagicMock, whisper_client: WhisperClient, sample_audio: bytes) -> None:
+    def test_does_not_retry_on_422(
+        self,
+        mock_sleep: MagicMock,
+        whisper_client: WhisperClient,
+        sample_audio: bytes,
+    ) -> None:
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.status_code = 422
         mock_response.text = "Unprocessable"
 
         whisper_client._client = MagicMock()
         whisper_client._client.post.side_effect = httpx.HTTPStatusError(
-            "422", request=MagicMock(), response=mock_response,
+            "422",
+            request=MagicMock(),
+            response=mock_response,
         )
 
         with pytest.raises(WhisperClientError):
@@ -216,7 +378,12 @@ class TestNoRetryOn4xx:
 
 class TestRetryOn5xx:
     @patch("orchestrator.whisper_client.time.sleep")
-    def test_retries_on_500(self, mock_sleep: MagicMock, whisper_client: WhisperClient, sample_audio: bytes) -> None:
+    def test_retries_on_500(
+        self,
+        mock_sleep: MagicMock,
+        whisper_client: WhisperClient,
+        sample_audio: bytes,
+    ) -> None:
         mock_err_response = MagicMock(spec=httpx.Response)
         mock_err_response.status_code = 500
         mock_err_response.text = "Internal error"
@@ -227,7 +394,9 @@ class TestRetryOn5xx:
 
         whisper_client._client = MagicMock()
         whisper_client._client.post.side_effect = [
-            httpx.HTTPStatusError("500", request=MagicMock(), response=mock_err_response),
+            httpx.HTTPStatusError(
+                "500", request=MagicMock(), response=mock_err_response
+            ),
             mock_ok_response,
         ]
 
@@ -243,7 +412,12 @@ class TestRetryOn5xx:
 
 class TestTimeoutHandling:
     @patch("orchestrator.whisper_client.time.sleep")
-    def test_retries_on_timeout(self, mock_sleep: MagicMock, whisper_client: WhisperClient, sample_audio: bytes) -> None:
+    def test_retries_on_timeout(
+        self,
+        mock_sleep: MagicMock,
+        whisper_client: WhisperClient,
+        sample_audio: bytes,
+    ) -> None:
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.text = "ok"
         mock_response.raise_for_status = MagicMock()
@@ -259,7 +433,12 @@ class TestTimeoutHandling:
         assert whisper_client._client.post.call_count == 2
 
     @patch("orchestrator.whisper_client.time.sleep")
-    def test_raises_after_max_timeout_retries(self, mock_sleep: MagicMock, whisper_client: WhisperClient, sample_audio: bytes) -> None:
+    def test_raises_after_max_timeout_retries(
+        self,
+        mock_sleep: MagicMock,
+        whisper_client: WhisperClient,
+        sample_audio: bytes,
+    ) -> None:
         whisper_client._client = MagicMock()
         whisper_client._client.post.side_effect = httpx.ReadTimeout("timeout")
 
@@ -282,7 +461,8 @@ class TestIsAvailable:
 
         assert whisper_client.is_available() is True
         whisper_client._client.get.assert_called_once_with(
-            "http://localhost:9000/docs", timeout=5.0,
+            "http://localhost:9000/docs",
+            timeout=5.0,
         )
 
     def test_unavailable_returns_false(self, whisper_client: WhisperClient) -> None:
