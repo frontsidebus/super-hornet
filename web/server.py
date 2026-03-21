@@ -283,7 +283,7 @@ async def get_status():
     whisper_ok = False
     try:
         client = await _get_whisper_client()
-        resp = await client.get(f"{settings.whisper_url}/")
+        resp = await client.get(f"{settings.whisper_url}/health")
         whisper_ok = resp.status_code < 500
     except Exception:
         pass
@@ -965,16 +965,15 @@ async def _transcribe_with_confidence(
     try:
         client = await _get_whisper_client()
         resp = await client.post(
-            f"{settings.whisper_url}/asr",
+            f"{settings.whisper_url}/v1/audio/transcriptions",
             files={
-                "audio_file": (filename, audio_bytes, mime_type),
+                "file": (filename, audio_bytes, mime_type),
             },
-            params={
-                "encode": "true",
-                "task": "transcribe",
+            data={
+                "model": settings.whisper_model,
                 "language": "en",
-                "output": "json",
-                "initial_prompt": AVIATION_PROMPT,
+                "response_format": "verbose_json",
+                "prompt": AVIATION_PROMPT,
             },
         )
         resp.raise_for_status()
