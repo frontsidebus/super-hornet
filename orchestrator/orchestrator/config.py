@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
+
+# Find .env from project root regardless of CWD
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
     model_config = {
-        "env_file": ".env",
+        "env_file": str(_ENV_FILE) if _ENV_FILE.exists() else ".env",
         "env_file_encoding": "utf-8",
         "extra": "ignore",  # ignore env vars we don't map
     }
