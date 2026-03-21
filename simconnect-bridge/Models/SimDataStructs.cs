@@ -25,6 +25,18 @@ public enum DataRequestId
     EngineData
 }
 
+/// <summary>
+/// Event IDs for SimConnect system event subscriptions.
+/// </summary>
+public enum SimEventId
+{
+    FlightLoaded,
+    SimStart,
+    SimStop,
+    Paused,
+    Unpaused,
+}
+
 // ---------------------------------------------------------------------------
 //  High-frequency struct: position, attitude, speeds, vertical speed
 //  Polled at ~30 Hz

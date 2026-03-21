@@ -54,6 +54,13 @@ simConnect.ConnectionChanged += connected =>
     Log("INFO", $"SimConnect connected: {connected}");
 };
 
+simConnect.FlightStateChanged += active =>
+{
+    Log("INFO", active
+        ? "Flight is active — telemetry streaming"
+        : "Flight ended — idling (telemetry paused)");
+};
+
 // Connect with retry -- the ConnectWithRetryAsync loop now handles
 // MSFS crashes/restarts automatically by re-entering the retry loop
 // when the connection is lost.

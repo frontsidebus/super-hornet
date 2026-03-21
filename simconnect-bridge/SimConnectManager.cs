@@ -29,6 +29,8 @@ public sealed class SimConnectManager : IDisposable
     private bool _autoReconnect = true;
     private CancellationTokenSource? _reconnectCts;
     private volatile bool _pumpRunning;
+    private bool _flightActive;
+    private bool _dataSubscribed;
 
     /// <summary>
     /// The current simulation state, updated on each data receive callback.
@@ -44,6 +46,11 @@ public sealed class SimConnectManager : IDisposable
     /// Raised when the SimConnect connection status changes.
     /// </summary>
     public event Action<bool>? ConnectionChanged;
+
+    /// <summary>
+    /// Raised when the flight active state changes (flight loaded/ended).
+    /// </summary>
+    public event Action<bool>? FlightStateChanged;
 
     /// <summary>
     /// Creates a new <see cref="SimConnectManager"/> with the given configuration.
@@ -78,8 +85,10 @@ public sealed class SimConnectManager : IDisposable
             _simConnect.OnRecvQuit += OnRecvQuit;
             _simConnect.OnRecvException += OnRecvException;
             _simConnect.OnRecvSimobjectData += OnRecvSimobjectData;
+            _simConnect.OnRecvEvent += OnRecvEvent;
 
             RegisterDataDefinitions();
+            SubscribeSystemEvents();
 
             // Start a dedicated thread that waits on the event handle and pumps
             // messages. This replaces the timer-based approach which raced with
@@ -331,8 +340,11 @@ public sealed class SimConnectManager : IDisposable
     //  Polling Timers
     // -----------------------------------------------------------------------
 
-    private void StartPolling()
+    private void StartDataSubscriptions()
     {
+        if (_dataSubscribed) return;
+        _dataSubscribed = true;
+
         // Use subscription-based data delivery instead of timer-based polling.
         // This tells SimConnect to push data automatically, which properly
         // signals the event handle for the message pump thread.
@@ -457,19 +469,77 @@ public sealed class SimConnectManager : IDisposable
     //  SimConnect Callbacks
     // -----------------------------------------------------------------------
 
+    private void SubscribeSystemEvents()
+    {
+        if (_simConnect is null) return;
+
+        // Subscribe to sim lifecycle events so we only poll when a flight is active
+        _simConnect.SubscribeToSystemEvent(SimEventId.FlightLoaded, "FlightLoaded");
+        _simConnect.SubscribeToSystemEvent(SimEventId.SimStart, "SimStart");
+        _simConnect.SubscribeToSystemEvent(SimEventId.SimStop, "SimStop");
+        _simConnect.SubscribeToSystemEvent(SimEventId.Paused, "Pause");
+        _simConnect.SubscribeToSystemEvent(SimEventId.Unpaused, "Unpaused");
+
+        Log("INFO", "System event subscriptions registered");
+    }
+
+    private void OnRecvEvent(SimConnect sender, SIMCONNECT_RECV_EVENT data)
+    {
+        switch ((SimEventId)data.uEventID)
+        {
+            case SimEventId.FlightLoaded:
+                Log("INFO", "Flight loaded — starting data subscriptions");
+                _flightActive = true;
+                FlightStateChanged?.Invoke(true);
+                StartDataSubscriptions();
+                break;
+
+            case SimEventId.SimStart:
+                Log("INFO", "Sim started");
+                if (!_dataSubscribed)
+                {
+                    _flightActive = true;
+                    FlightStateChanged?.Invoke(true);
+                    StartDataSubscriptions();
+                }
+                break;
+
+            case SimEventId.SimStop:
+                Log("INFO", "Sim stopped — flight ended, idling");
+                _flightActive = false;
+                FlightStateChanged?.Invoke(false);
+                break;
+
+            case SimEventId.Paused:
+                Log("DEBUG", "Sim paused");
+                break;
+
+            case SimEventId.Unpaused:
+                Log("DEBUG", "Sim unpaused");
+                break;
+        }
+    }
+
     private void OnRecvOpen(SimConnect sender, SIMCONNECT_RECV_OPEN data)
     {
         Log("INFO", $"Recv Open: {data.szApplicationName}");
-        // Delay polling start — MSFS needs a moment after the connection opens
-        // before it can service data requests. Requesting too early causes
-        // sustained 0x80004005 (E_FAIL) errors.
-        Log("INFO", "Waiting 3s for sim to be ready before polling...");
+        Log("INFO", "Connected to MSFS — waiting for flight to load...");
         _consecutiveErrors = 0;
-        var delayTimer = new Timer(_ =>
+
+        // Don't start data subscriptions yet — wait for FlightLoaded or SimStart.
+        // If the user is already in a flight when the bridge starts, SimStart
+        // fires shortly after Open. If on the main menu, we idle quietly.
+        //
+        // As a fallback, try after 5s in case the events don't fire (some
+        // MSFS versions/states may not emit FlightLoaded on reconnect).
+        var fallbackTimer = new Timer(_ =>
         {
-            Log("INFO", "Starting data polling");
-            StartPolling();
-        }, null, 3000, Timeout.Infinite);
+            if (!_dataSubscribed && _connected)
+            {
+                Log("INFO", "No flight event received — trying data subscriptions anyway");
+                StartDataSubscriptions();
+            }
+        }, null, 5000, Timeout.Infinite);
     }
 
     private void OnRecvQuit(SimConnect sender, SIMCONNECT_RECV data)
@@ -606,6 +676,8 @@ public sealed class SimConnectManager : IDisposable
     {
         if (!_connected) return;
         _connected = false;
+        _flightActive = false;
+        _dataSubscribed = false;
         CurrentState.Connected = false;
         StopTimers();
 
