@@ -66,29 +66,47 @@ cp .env.example .env
 # Edit .env with your API keys (ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID)
 ```
 
-### 2. Start Docker services
+### 2. Start everything
+
+From WSL, run the startup script to launch all components (Docker services, SimConnect bridge, and web server):
 
 ```bash
-docker compose up -d
+./scripts/start.sh
 ```
 
-This launches Whisper (STT), ChromaDB (RAG), and the web server. The Whisper service uses the `fedirz/faster-whisper-server` image. First startup downloads the Whisper model from HuggingFace (~1.5 GB for the default `medium` model) -- allow a few minutes.
+This starts Whisper (STT), ChromaDB (RAG), builds and launches the SimConnect bridge, and starts the web server. First startup downloads the Whisper model from HuggingFace (~1.5 GB for the default `medium` model) -- allow a few minutes.
 
-### 3. Start the SimConnect bridge (Windows)
+To stop everything:
 
 ```bash
-cd simconnect-bridge
-dotnet restore && dotnet build
-dotnet run
+./scripts/stop.sh
 ```
 
-The bridge connects to MSFS and streams telemetry over WebSocket on port 8080.
-
-### 4. Open the cockpit UI
+### 3. Open the cockpit UI
 
 Navigate to [http://localhost:3838](http://localhost:3838) in your browser. MERLIN is ready.
 
 > **WSL2 note:** If running Docker in WSL2, set `SIMCONNECT_WS_HOST` in `.env` to your Windows host IP (not `localhost`). See [docs/INSTALL.md](docs/INSTALL.md) for details.
+
+<details>
+<summary>Manual startup (without script)</summary>
+
+```bash
+# Docker services
+docker compose up -d
+
+# SimConnect bridge (Windows terminal)
+cd simconnect-bridge
+dotnet restore && dotnet build
+dotnet run
+
+# Web server (WSL)
+cd web
+source ../orchestrator/.venv/bin/activate
+python run.py
+```
+
+</details>
 
 ---
 
@@ -132,6 +150,9 @@ airdale/
 │   ├── orchestrator/       # Source: config, sim_client, claude_client, voice, etc.
 │   └── pyproject.toml      # Build config (hatch + ruff)
 ├── simconnect-bridge/      # C# .NET SimConnect bridge (runs on Windows)
+├── scripts/
+│   ├── start.sh            # Start all MERLIN components
+│   └── stop.sh             # Gracefully stop everything
 ├── docker-compose.yml      # Whisper, ChromaDB, orchestrator services
 ├── .env.example            # Environment variable template
 └── docs/

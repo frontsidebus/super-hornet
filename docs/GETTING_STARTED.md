@@ -17,9 +17,26 @@ Launch MSFS 2024 and load into a **Free Flight**. For your first session, pick s
 
 Wait until you are fully loaded into the cockpit before proceeding.
 
-### 2. Start the SimConnect Bridge
+### 2. Start MERLIN
 
-Open a terminal on your Windows host (PowerShell or CMD):
+The easiest way to start everything is with the startup script (from WSL):
+
+```bash
+./scripts/start.sh
+```
+
+This launches Docker services (Whisper, ChromaDB), builds and starts the SimConnect bridge, and starts the web server. You'll see a status summary when everything is ready.
+
+To stop all components:
+
+```bash
+./scripts/stop.sh
+```
+
+<details>
+<summary>Manual startup (step-by-step)</summary>
+
+**Start the SimConnect Bridge** -- open a terminal on your Windows host (PowerShell or CMD):
 
 ```bash
 cd simconnect-bridge
@@ -42,35 +59,21 @@ You should see:
 
 If you see `Retrying in 5000ms...`, make sure MSFS is fully loaded into a flight (not the main menu).
 
-### 3. Start Docker Services
-
-If not already running:
+**Start Docker Services:**
 
 ```bash
 docker compose up -d
 ```
 
-Wait for services to become healthy:
+**Start the Web Server:**
 
 ```bash
-docker compose ps
+cd web
+source ../orchestrator/.venv/bin/activate
+python run.py
 ```
 
-### 4. Start the Orchestrator
-
-**If running natively** (recommended for voice input):
-
-```bash
-cd orchestrator
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-merlin
-```
-
-**If running in Docker**, the orchestrator starts automatically with `docker compose up -d`. Attach to it:
-
-```bash
-docker attach merlin-orchestrator
-```
+</details>
 
 ### 5. Verify Connection
 
