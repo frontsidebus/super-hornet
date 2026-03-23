@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from orchestrator.audio_processing import (
-    AVIATION_PROMPT,
+    SC_VOCABULARY_PROMPT,
     convert_webm_to_wav_normalized,
 )
 from orchestrator.claude_client import ClaudeClient  # noqa: E402
@@ -981,7 +981,7 @@ async def _transcribe_with_confidence(
                 "model": settings.whisper_model,
                 "language": "en",
                 "response_format": "verbose_json",
-                "prompt": AVIATION_PROMPT,
+                "prompt": SC_VOCABULARY_PROMPT,
             },
         )
         resp.raise_for_status()

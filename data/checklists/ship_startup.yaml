@@ -1,0 +1,85 @@
+# =============================================================================
+# Super Hornet Checklist — Ship Startup
+# =============================================================================
+# Star Citizen ship power-on and departure sequence.
+# Applicable to most single-seat fighters; keybinds assume default layout.
+# =============================================================================
+
+name: Ship Startup
+activity: SHIP_IDLE
+
+steps:
+  # --- Pre-Start ---
+  - description: "Approach ship and enter pilot seat"
+    action: hold_key
+    parameters: { key: "F", duration: 0.5 }
+    wait_after_ms: 3000
+
+  - description: "Wait for cockpit HUD to initialise"
+    action: wait
+    parameters: { duration: 2.0 }
+    wait_after_ms: 0
+
+  # --- Power ---
+  - description: "Power on ship (Flight Ready)"
+    action: press_key
+    parameters: { key: "R" }
+    wait_after_ms: 2000
+
+  - description: "Verify HUD elements are active"
+    action: wait
+    parameters: { duration: 1.0 }
+    wait_after_ms: 0
+
+  # --- Shields & Systems ---
+  - description: "Verify shields are online (check shield HUD)"
+    action: wait
+    parameters: { duration: 0.5 }
+    wait_after_ms: 0
+
+  - description: "Open power MFD triangle (if needed)"
+    action: press_key
+    parameters: { key: "F4" }
+    wait_after_ms: 500
+
+  - description: "Set power distribution — balanced"
+    action: press_key
+    parameters: { key: "Numpad5" }
+    wait_after_ms: 300
+
+  # --- Weapons ---
+  - description: "Arm weapons"
+    action: press_key
+    parameters: { key: "P" }
+    wait_after_ms: 500
+
+  - description: "Select all weapon groups"
+    action: wait
+    parameters: { duration: 0.3 }
+    wait_after_ms: 0
+
+  # --- Pre-Departure ---
+  - description: "Request landing pad departure clearance via comms (F11)"
+    action: press_key
+    parameters: { key: "F11" }
+    wait_after_ms: 2000
+
+  - description: "Select departure option in comms menu"
+    action: press_key
+    parameters: { key: "1" }
+    wait_after_ms: 1500
+
+  - description: "Retract landing gear"
+    action: press_key
+    parameters: { key: "N" }
+    wait_after_ms: 500
+
+  - description: "Disengage parking brake / launch"
+    action: press_key
+    parameters: { key: "L" }
+    wait_after_ms: 300
+
+  - description: "Gently throttle up and depart pad"
+    action: hold_key
+    parameters: { key: "W", duration: 1.0 }
+    wait_after_ms: 0

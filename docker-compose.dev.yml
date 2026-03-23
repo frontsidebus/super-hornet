@@ -1,4 +1,4 @@
-# MERLIN - Development overrides
+# Super Hornet - Development overrides
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
@@ -27,5 +27,4 @@ services:
     environment:
       - LOG_LEVEL=DEBUG
       - PYTHONDONTWRITEBYTECODE=1
-      # Enables auto-reload if the entrypoint supports it
-      - MERLIN_DEV_MODE=true
+      - HORNET_DEV_MODE=true

@@ -1,4 +1,4 @@
-"""ChromaDB-based RAG store for aircraft manuals and aviation knowledge."""
+"""ChromaDB-based RAG store for Star Citizen knowledge base."""
 
 from __future__ import annotations
 
@@ -10,26 +10,33 @@ from typing import Any
 
 import chromadb
 
-from .sim_client import FlightPhase, SimState
+from .game_state import GameActivity, GameState
 
 logger = logging.getLogger(__name__)
 
-# Default TTL for cached query results (seconds).  Within the same flight
-# phase the relevant documents rarely change, so a generous TTL avoids
-# repeated round-trips to ChromaDB.
+# Default TTL for cached query results (seconds).
 _CACHE_TTL: float = 60.0
 
-# Map flight phases to relevant document topics for smarter retrieval
-PHASE_TOPICS: dict[FlightPhase, list[str]] = {
-    FlightPhase.PREFLIGHT: ["preflight", "checklist", "weight and balance", "fuel planning"],
-    FlightPhase.TAXI: ["taxi", "ground operations", "airport diagram"],
-    FlightPhase.TAKEOFF: ["takeoff", "departure", "engine failure", "V-speeds", "rejected takeoff"],
-    FlightPhase.CLIMB: ["climb", "cruise climb", "engine management", "oxygen"],
-    FlightPhase.CRUISE: ["cruise", "fuel management", "navigation", "weather"],
-    FlightPhase.DESCENT: ["descent", "approach briefing", "STAR", "altimeter"],
-    FlightPhase.APPROACH: ["approach", "ILS", "VOR", "RNAV", "minimums", "go-around"],
-    FlightPhase.LANDING: ["landing", "crosswind", "short field", "go-around", "flare"],
-    FlightPhase.LANDED: ["after landing", "shutdown", "parking"],
+# Map game activities to relevant document topics for smarter retrieval
+ACTIVITY_TOPICS: dict[GameActivity, list[str]] = {
+    GameActivity.IDLE: ["general", "ship builds", "loadouts", "game mechanics"],
+    GameActivity.ON_FOOT: ["FPS", "ground combat", "locations", "missions"],
+    GameActivity.SHIP_IDLE: ["ship startup", "power management", "pre-flight", "components"],
+    GameActivity.SHIP_FLIGHT: ["navigation", "flight controls", "SCM", "afterburner"],
+    GameActivity.QUANTUM_TRAVEL: ["quantum travel", "jump points", "route planning", "fuel"],
+    GameActivity.COMBAT: [
+        "combat", "weapons", "shields", "missiles", "countermeasures", "evasion", "power triangle",
+    ],
+    GameActivity.MINING: [
+        "mining", "rock composition", "laser", "extraction", "refining", "quantanium",
+    ],
+    GameActivity.SALVAGE: ["salvage", "components", "materials", "reclamation"],
+    GameActivity.TRADING: ["trading", "commodities", "cargo", "trade routes", "profit margins"],
+    GameActivity.LANDING: ["landing", "approach", "landing pads", "hangars", "ATC"],
+    GameActivity.EVA: ["EVA", "spacewalk", "zero gravity", "repair"],
+    GameActivity.ENGINEERING: [
+        "engineering", "power distribution", "overclocking", "component repair", "fire suppression",
+    ],
 }
 
 
@@ -37,14 +44,13 @@ class _QueryCache:
     """Simple TTL cache keyed by (query_text, n_results, filters_hash).
 
     Avoids repeated ChromaDB round-trips for identical queries within the
-    same flight phase.  The cache is invalidated when the flight phase
-    changes.
+    same game activity.  The cache is invalidated when the activity changes.
     """
 
     def __init__(self, ttl: float = _CACHE_TTL) -> None:
         self._ttl = ttl
         self._entries: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-        self._phase: FlightPhase | None = None
+        self._activity: GameActivity | None = None
 
     def _make_key(
         self,
@@ -61,12 +67,12 @@ class _QueryCache:
         text: str,
         n_results: int,
         filters: dict[str, Any] | None,
-        phase: FlightPhase | None = None,
+        activity: GameActivity | None = None,
     ) -> list[dict[str, Any]] | None:
-        """Return cached results or None on miss / stale / phase change."""
-        if phase is not None and phase != self._phase:
+        """Return cached results or None on miss / stale / activity change."""
+        if activity is not None and activity != self._activity:
             self.invalidate()
-            self._phase = phase
+            self._activity = activity
             return None
         key = self._make_key(text, n_results, filters)
         entry = self._entries.get(key)
@@ -94,7 +100,7 @@ class _QueryCache:
 
 
 class ContextStore:
-    """Vector store for aviation documents with flight-phase-aware retrieval.
+    """Vector store for Star Citizen knowledge with activity-aware retrieval.
 
     Connects to a ChromaDB instance running as a Docker container via the
     HTTP client.  If the server is unavailable at construction time the store
@@ -102,27 +108,33 @@ class ContextStore:
     report zero.
 
     Includes an in-memory query cache that avoids repeated ChromaDB
-    round-trips for the same query within a flight phase.
+    round-trips for the same query within a game activity.
     """
 
-    def __init__(self, chromadb_url: str = "http://localhost:8000") -> None:
+    def __init__(
+        self,
+        chromadb_url: str = "http://localhost:8000",
+        collection_name: str = "hornet_knowledge",
+    ) -> None:
         self._available = False
         self._collection: Any = None
         self._cache = _QueryCache()
+        self._collection_name = collection_name
         try:
             self._client = chromadb.HttpClient(
                 host=self._parse_host(chromadb_url),
                 port=self._parse_port(chromadb_url),
             )
-            # Verify connectivity with a heartbeat
             self._client.heartbeat()
             self._collection = self._client.get_or_create_collection(
-                name="merlin_docs",
+                name=collection_name,
                 metadata={"hnsw:space": "cosine"},
             )
             self._available = True
             logger.info(
-                "Connected to ChromaDB at %s (collection: merlin_docs)", chromadb_url
+                "Connected to ChromaDB at %s (collection: %s)",
+                chromadb_url,
+                collection_name,
             )
         except Exception as exc:
             logger.warning(
@@ -211,18 +223,17 @@ class ContextStore:
         text: str,
         n_results: int = 5,
         filters: dict[str, Any] | None = None,
-        phase: FlightPhase | None = None,
+        activity: GameActivity | None = None,
     ) -> list[dict[str, Any]]:
         """Query the store and return matching documents with metadata.
 
         Results are cached per (text, n_results, filters) tuple and
-        automatically invalidated when the flight phase changes.
+        automatically invalidated when the game activity changes.
         """
         if not self._available or self._collection is None:
             return []
 
-        # Check the cache first
-        cached = self._cache.get(text, n_results, filters, phase)
+        cached = self._cache.get(text, n_results, filters, activity)
         if cached is not None:
             logger.debug("Context store cache hit for query: %s", text[:60])
             return cached
@@ -252,7 +263,6 @@ class ContextStore:
                         {"content": doc, "metadata": meta, "distance": dist}
                     )
 
-            # Store in cache
             self._cache.put(text, n_results, filters, docs)
             return docs
         except Exception as exc:
@@ -261,33 +271,34 @@ class ContextStore:
 
     async def get_relevant_context(
         self,
-        sim_state: SimState,
+        game_state: GameState,
         n_results: int = 5,
     ) -> list[dict[str, Any]]:
-        """Retrieve documents relevant to the current aircraft and flight phase.
+        """Retrieve documents relevant to the current ship and game activity.
 
-        Uses the flight phase for cache invalidation -- when the phase
+        Uses the game activity for cache invalidation -- when the activity
         changes, previous results are discarded automatically.
         """
         if not self._available:
             return []
 
-        phase = sim_state.flight_phase
-        topics = PHASE_TOPICS.get(phase, ["general"])
-        query_text = f"{sim_state.aircraft} {' '.join(topics)}"
+        activity = game_state.activity
+        topics = ACTIVITY_TOPICS.get(activity, ["general"])
+        ship_name = game_state.ship.name if game_state.player.in_ship else ""
+        query_text = f"{ship_name} {' '.join(topics)}".strip()
 
-        if sim_state.aircraft:
-            aircraft_results = await self.query(
+        if ship_name:
+            ship_results = await self.query(
                 query_text,
                 n_results=n_results,
-                filters={"aircraft_type": sim_state.aircraft},
-                phase=phase,
+                filters={"ship_name": ship_name},
+                activity=activity,
             )
-            if aircraft_results:
-                return aircraft_results
+            if ship_results:
+                return ship_results
 
         return await self.query(
-            query_text, n_results=n_results, phase=phase
+            query_text, n_results=n_results, activity=activity
         )
 
     @staticmethod

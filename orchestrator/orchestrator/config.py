@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import Field, model_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 # Find .env from project root regardless of CWD
@@ -29,29 +29,55 @@ class Settings(BaseSettings):
     )
     claude_max_tokens: int = Field(
         default=1024,
-        description="Default max tokens for Claude responses (keeps comms tactical)",
+        description="Default max tokens for Claude responses",
     )
     claude_max_tokens_briefing: int = Field(
         default=2048,
-        description="Max tokens for briefings, checklists, and flight plans",
+        description="Max tokens for briefings, trade plans, and detailed responses",
     )
     claude_max_history: int = Field(
         default=20,
         description="Max message pairs to retain in conversation history",
     )
 
-    # --- SimConnect bridge ---------------------------------------------------
-    simconnect_ws_host: str = Field(
-        default="localhost",
-        description="WebSocket host for the SimConnect bridge",
-    )
-    simconnect_ws_port: int = Field(
-        default=8080,
-        description="WebSocket port for the SimConnect bridge",
-    )
-    simconnect_bridge_url: str = Field(
+    # --- Star Citizen game.log -----------------------------------------------
+    sc_game_log_path: str = Field(
         default="",
-        description="Full WebSocket URL (constructed from host+port if empty)",
+        description="Path to Star Citizen game.log file",
+    )
+    sc_install_path: str = Field(
+        default="",
+        description="Path to Star Citizen installation (for data extraction)",
+    )
+
+    # --- UEX Corp API --------------------------------------------------------
+    uex_api_base_url: str = Field(
+        default="https://uexcorp.space/api/2.0",
+        description="UEX Corp API base URL",
+    )
+    uex_api_key: str = Field(
+        default="",
+        description="UEX Corp API bearer token (optional, increases rate limit)",
+    )
+
+    # --- Vision pipeline -----------------------------------------------------
+    vision_enabled: bool = Field(
+        default=True,
+        description="Enable vision-based HUD reading via screen capture",
+    )
+    vision_fps: int = Field(
+        default=1,
+        description="Vision capture frames per second",
+    )
+    vision_roi_config_path: str = Field(
+        default="",
+        description="Path to ROI definitions YAML for HUD element regions",
+    )
+
+    # --- Input simulation ----------------------------------------------------
+    input_simulation_enabled: bool = Field(
+        default=False,
+        description="Enable keyboard/mouse input simulation (requires user opt-in)",
     )
 
     # --- Whisper STT ---------------------------------------------------------
@@ -74,7 +100,7 @@ class Settings(BaseSettings):
         description="ElevenLabs voice ID for TTS output",
     )
 
-    # --- Screen capture ------------------------------------------------------
+    # --- Screen capture (legacy, used by CaptureManager) ---------------------
     screen_capture_enabled: bool = Field(
         default=False,
         description="Enable screen capture for vision-based analysis",
@@ -84,10 +110,18 @@ class Settings(BaseSettings):
         description="Frames per second for screen capture",
     )
 
-    # --- ChromaDB (context store) --------------------------------------------
+    # --- ChromaDB (context store + skill library) ----------------------------
     chromadb_url: str = Field(
         default="http://localhost:8000",
         description="URL of the ChromaDB HTTP server (Docker)",
+    )
+    knowledge_base_collection: str = Field(
+        default="hornet_knowledge",
+        description="ChromaDB collection name for knowledge base (RAG)",
+    )
+    skill_library_collection: str = Field(
+        default="hornet_skills",
+        description="ChromaDB collection name for skill library",
     )
 
     # --- Logging -------------------------------------------------------------
@@ -95,16 +129,6 @@ class Settings(BaseSettings):
         default="INFO",
         description="Log level: DEBUG, INFO, WARNING, ERROR",
     )
-
-    @model_validator(mode="after")
-    def _build_derived(self) -> Settings:
-        # Construct the bridge URL from host + port when not explicitly set
-        if not self.simconnect_bridge_url:
-            self.simconnect_bridge_url = (
-                f"ws://{self.simconnect_ws_host}:{self.simconnect_ws_port}"
-            )
-        # Alias: accept voice_id from env as ELEVENLABS_VOICE_ID
-        return self
 
     @property
     def voice_id(self) -> str:

@@ -1,9 +1,5 @@
-# MERLIN - AI Co-Pilot for MSFS 2024
+# Super Hornet - AI Agent for Star Citizen
 # Docker Compose configuration for local services.
-#
-# NOTE: The SimConnect bridge (C#) runs natively on the Windows host
-# because it requires direct access to the SimConnect SDK.
-# The orchestrator connects to it via WebSocket on localhost:8080.
 #
 # Usage:
 #   docker compose up -d              # start all services
@@ -17,7 +13,7 @@ services:
   # ---------------------------------------------------------------------------
   whisper:
     image: fedirz/faster-whisper-server:latest-cpu
-    container_name: merlin-whisper
+    container_name: hornet-whisper
     ports:
       - "9090:8000"
     environment:
@@ -33,13 +29,11 @@ services:
       retries: 5
       start_period: 120s
     networks:
-      - merlin
+      - constellation
     # -------------------------------------------------------------------------
     # GPU acceleration (NVIDIA). Uncomment the lines below and comment out
     # the CPU image above if you have an NVIDIA GPU and nvidia-container-toolkit.
-    # See: https://docs.docker.com/compose/gpu-support/
     # -------------------------------------------------------------------------
-    # Uncomment for GPU acceleration (requires nvidia-container-toolkit):
     # image: fedirz/faster-whisper-server:latest-cuda
     # deploy:
     #   resources:
@@ -50,12 +44,13 @@ services:
     #           capabilities: [gpu]
 
   # ---------------------------------------------------------------------------
-  # ChromaDB - Vector store for RAG (Retrieval-Augmented Generation)
-  # Stores aircraft manuals, checklists, and procedures for context retrieval.
+  # ChromaDB - Vector store for RAG and Skill Library
+  # Stores Star Citizen knowledge base (ships, trade data, game lore) and
+  # learned action sequences (Voyager-inspired skill library).
   # ---------------------------------------------------------------------------
   chromadb:
     image: chromadb/chroma:latest
-    container_name: merlin-chromadb
+    container_name: hornet-chromadb
     ports:
       - "8000:8000"
     environment:
@@ -71,17 +66,17 @@ services:
       retries: 3
       start_period: 15s
     networks:
-      - merlin
+      - constellation
 
   # ---------------------------------------------------------------------------
-  # Orchestrator - MERLIN's brain
-  # Coordinates between Claude, SimConnect bridge, Whisper, and ChromaDB.
+  # Orchestrator - Super Hornet's brain
+  # Coordinates between Claude, perception layer, Whisper, and ChromaDB.
   # ---------------------------------------------------------------------------
   orchestrator:
     build:
       context: ./orchestrator
       dockerfile: Dockerfile
-    container_name: merlin-orchestrator
+    container_name: hornet-orchestrator
     ports:
       - "3838:3838"
     depends_on:
@@ -94,20 +89,17 @@ services:
     environment:
       - WHISPER_URL=http://whisper:8000
       - CHROMADB_URL=http://chromadb:8000
-      # The SimConnect bridge runs on the Windows host. In Docker Desktop for
-      # Windows, host.docker.internal resolves to the host machine.
-      - SIMCONNECT_BRIDGE_URL=ws://host.docker.internal:8080
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     networks:
-      - merlin
+      - constellation
 
 volumes:
   whisper_cache:
     driver: local
 
 networks:
-  merlin:
-    name: merlin
+  constellation:
+    name: constellation
     driver: bridge

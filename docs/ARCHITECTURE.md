@@ -163,7 +163,7 @@ Barge-in: new user input cancels in-flight Claude stream + TTS immediately
 | `claude_client.py` | Anthropic API wrapper; MERLIN persona (from `data/prompts/merlin_system.md`); flight-phase-aware response style directives; response pacing rules; streaming with tool dispatch |
 | `flight_phase.py` | `FlightPhaseDetector` state machine with configurable `PhaseThresholds`; hysteresis (3 consecutive detections before transition) |
 | `context_store.py` | ChromaDB RAG store; document ingestion with chunking; phase-aware topic mapping; `_QueryCache` with 60s TTL to avoid redundant ChromaDB round-trips |
-| `audio_processing.py` | Audio preprocessing: high-pass filter, silence trimming, normalization; Silero VAD (neural voice activity detection, 400ms silence timeout); `AVIATION_PROMPT` vocabulary for Whisper biasing; WebM-to-WAV conversion |
+| `audio_processing.py` | Audio preprocessing: high-pass filter, silence trimming, normalization; Silero VAD (neural voice activity detection, 400ms silence timeout); `SC_VOCABULARY_PROMPT` vocabulary for Whisper biasing; WebM-to-WAV conversion |
 | `voice.py` | `VoiceInput` (PTT and VAD modes); `VoiceOutput` (streaming TTS with sentence buffering); barge-in cancellation support |
 | `tts_preprocessor.py` | ICAO-compliant aviation text preprocessing for TTS: digit-by-digit pronunciation for flight levels, headings, frequencies, runway designators, squawk codes |
 | `whisper_client.py` | HTTP client for faster-whisper ASR service (OpenAI-compatible `/v1/audio/transcriptions` endpoint); `TranscriptionResult` dataclass; retry with exponential backoff; confidence scoring |

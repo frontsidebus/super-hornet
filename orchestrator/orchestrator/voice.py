@@ -15,7 +15,7 @@ import httpx
 import numpy as np
 
 from .audio_processing import (
-    AVIATION_PROMPT,
+    SC_VOCABULARY_PROMPT,
     SileroVAD,
     preprocess_audio,
     samples_to_wav_bytes,
@@ -201,7 +201,7 @@ class VoiceInput:
                         "task": "transcribe",
                         "language": "en",
                         "output": "json",
-                        "initial_prompt": AVIATION_PROMPT,
+                        "initial_prompt": SC_VOCABULARY_PROMPT,
                     },
                     files={"audio_file": ("audio.wav", wav_bytes, "audio/wav")},
                 )
