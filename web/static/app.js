@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-//  MERLIN // AI CO-PILOT — Main Application
+//  SUPER HORNET // AI WINGMAN — Main Application
 // ═══════════════════════════════════════════════════════════
 
 (() => {
@@ -29,7 +29,7 @@
     voiceStatus:      document.getElementById('voice-status'),
     voiceStatusText:  document.querySelector('.voice-status-text'),
     ttsAudio:         document.getElementById('tts-audio'),
-    statusSim:        document.querySelector('#status-simconnect .led'),
+    statusSim:        document.querySelector('#status-game .led'),
     statusWhisper:    document.querySelector('#status-whisper .led'),
     statusChroma:     document.querySelector('#status-chromadb .led'),
     statusClaude:     document.querySelector('#status-claude .led'),
@@ -70,10 +70,10 @@
     pendingTelemetryData: null,
     chatReconnecting: false,        // suppress duplicate system messages
     telemetryReconnecting: false,
-    simWasConnected: false,           // tracks actual SimConnect status
+    simWasConnected: false,           // tracks actual game connection status
     wsMessageBuffer: [],            // backpressure buffer
     wsBufferProcessing: false,
-    thinkingMsgEl: null,            // "MERLIN is thinking..." indicator
+    thinkingMsgEl: null,            // "Super Hornet is thinking..." indicator
     _acquiringMic: false,           // mutex for async mic acquisition
   };
 
@@ -159,72 +159,37 @@
   // ═══════════════════════════════════════════════════════
 
   const TELEM_SECTIONS = [
-    {
-      header: 'AIRCRAFT',
-      fields: [
-        { key: 'aircraft_type', label: 'TYPE' },
-        { key: 'flight_phase',  label: 'PHASE' },
-      ],
-    },
-    {
-      header: 'POSITION',
-      fields: [
-        { key: 'latitude',  label: 'LAT' },
-        { key: 'longitude', label: 'LON' },
-        { key: 'altitude',  label: 'ALT' },
-        { key: 'agl',       label: 'AGL' },
-      ],
-    },
-    {
-      header: 'SPEEDS',
-      fields: [
-        { key: 'ias',      label: 'IAS' },
-        { key: 'tas',      label: 'TAS' },
-        { key: 'gs',       label: 'GS' },
-        { key: 'vs',       label: 'VS' },
-        { key: 'heading',  label: 'HDG' },
-      ],
-    },
-    {
-      header: 'ENGINE',
-      fields: [
-        { key: 'rpm',       label: 'RPM' },
-        { key: 'manifold',  label: 'MP' },
-        { key: 'fuel_flow', label: 'FF' },
-        { key: 'oil_temp',  label: 'OIL' },
-      ],
-    },
-    {
-      header: 'AUTOPILOT',
-      fields: [
-        { key: 'ap_status', label: 'STATUS' },
-        { key: 'ap_hdg',    label: 'HDG' },
-        { key: 'ap_alt',    label: 'ALT' },
-        { key: 'ap_vs',     label: 'VS' },
-      ],
-    },
-    {
-      header: 'ENVIRONMENT',
-      fields: [
-        { key: 'wind',        label: 'WIND' },
-        { key: 'visibility',  label: 'VIS' },
-        { key: 'temperature', label: 'TEMP' },
-        { key: 'qnh',         label: 'QNH' },
-      ],
-    },
-    {
-      header: 'RADIOS',
-      fields: [
-        { key: 'com1', label: 'COM1' },
-        { key: 'com2', label: 'COM2' },
-      ],
-    },
-    {
-      header: 'FUEL',
-      fields: [
-        { key: 'fuel_total', label: 'TOTAL' },
-      ],
-    },
+    { header: 'SHIP', fields: [
+      { key: 'ship_name', label: 'SHIP' },
+      { key: 'activity', label: 'ACTIVITY' },
+    ]},
+    { header: 'LOCATION', fields: [
+      { key: 'system', label: 'SYSTEM' },
+      { key: 'body', label: 'BODY' },
+      { key: 'zone', label: 'ZONE' },
+    ]},
+    { header: 'SHIELDS', fields: [
+      { key: 'shields_front', label: 'FRONT' },
+      { key: 'shields_rear', label: 'REAR' },
+      { key: 'shields_left', label: 'LEFT' },
+      { key: 'shields_right', label: 'RIGHT' },
+    ]},
+    { header: 'SYSTEMS', fields: [
+      { key: 'hull', label: 'HULL' },
+      { key: 'h_fuel', label: 'H-FUEL' },
+      { key: 'q_fuel', label: 'Q-FUEL' },
+      { key: 'power', label: 'POWER' },
+    ]},
+    { header: 'WEAPONS', fields: [
+      { key: 'weapons', label: 'STATUS' },
+      { key: 'missiles', label: 'MISSILES' },
+      { key: 'mode', label: 'MODE' },
+    ]},
+    { header: 'COMBAT', fields: [
+      { key: 'hostiles', label: 'HOSTILES' },
+      { key: 'crime_stat', label: 'CRIMESTAT' },
+      { key: 'target', label: 'TARGET' },
+    ]},
   ];
 
   // Cache telemetry value elements for fast lookup (avoid querySelectorAll per update)
@@ -271,62 +236,40 @@
 
   function flattenTelemetry(msg) {
     // The server sends: { type: "telemetry", connected: bool, data: { ... } }
-    // where data contains the raw bridge JSON with nested objects.
+    // where data contains the Star Citizen GameState with nested objects.
     // Flatten it into the display keys expected by TELEM_SECTIONS.
     const d = msg.data || msg;
     if (!d || typeof d !== 'object') return null;
 
-    const pos = d.position || {};
-    const spd = d.speeds || {};
-    const att = d.attitude || {};
-    const eng = d.engines || {};
-    const ap  = d.autopilot || {};
-    const env = d.environment || {};
-    const fuel = d.fuel || {};
-    const surf = d.surfaces || {};
-
-    // Get first engine data
-    const e1 = (eng.engines && eng.engines[0]) || {};
+    const ship = d.ship || {};
+    const player = d.player || {};
+    const combat = d.combat || {};
 
     const flat = {};
-    flat.aircraft_type = d.aircraft || '---';
-    flat.flight_phase  = d.flight_phase || '---';
+    flat.ship_name = ship.name || '---';
+    flat.activity = d.activity || '---';
 
-    flat.latitude  = pos.latitude  != null
-      ? Math.abs(pos.latitude).toFixed(4) + '° ' + (pos.latitude >= 0 ? 'N' : 'S')
-      : '---';
-    flat.longitude = pos.longitude != null
-      ? Math.abs(pos.longitude).toFixed(4) + '° ' + (pos.longitude >= 0 ? 'E' : 'W')
-      : '---';
-    flat.altitude  = pos.altitude_msl != null ? Math.round(pos.altitude_msl) + ' ft' : '---';
-    flat.agl       = pos.altitude_agl != null ? Math.round(pos.altitude_agl) + ' ft' : '---';
+    flat.system = player.location_system || '---';
+    flat.body = player.location_body || '---';
+    flat.zone = player.location_zone || '---';
 
-    flat.ias     = spd.indicated_airspeed != null ? Math.round(spd.indicated_airspeed) + ' kt' : '---';
-    flat.tas     = spd.true_airspeed != null ? Math.round(spd.true_airspeed) + ' kt' : '---';
-    flat.gs      = spd.ground_speed != null ? Math.round(spd.ground_speed) + ' kt' : '---';
-    flat.vs      = spd.vertical_speed != null ? Math.round(spd.vertical_speed) + ' fpm' : '---';
-    flat.heading = att.heading_magnetic != null ? String(Math.round(att.heading_magnetic)).padStart(3, '0') + '°' : '---';
+    flat.shields_front = ship.shields_front != null ? Math.round(ship.shields_front) + '%' : '---';
+    flat.shields_rear = ship.shields_rear != null ? Math.round(ship.shields_rear) + '%' : '---';
+    flat.shields_left = ship.shields_left != null ? Math.round(ship.shields_left) + '%' : '---';
+    flat.shields_right = ship.shields_right != null ? Math.round(ship.shields_right) + '%' : '---';
 
-    flat.rpm       = e1.rpm != null ? Math.round(e1.rpm) : '---';
-    flat.manifold  = e1.manifold_pressure != null ? e1.manifold_pressure.toFixed(1) + ' inHg' : '---';
-    flat.fuel_flow = e1.fuel_flow_gph != null ? e1.fuel_flow_gph.toFixed(1) + ' gph' : '---';
-    flat.oil_temp  = e1.oil_temp != null ? Math.round(e1.oil_temp) + '°C' : '---';
+    flat.hull = ship.hull_percent != null ? Math.round(ship.hull_percent) + '%' : '---';
+    flat.h_fuel = ship.hydrogen_fuel_percent != null ? Math.round(ship.hydrogen_fuel_percent) + '%' : '---';
+    flat.q_fuel = ship.quantum_fuel_percent != null ? Math.round(ship.quantum_fuel_percent) + '%' : '---';
+    flat.power = ship.power_on ? 'ON' : 'OFF';
 
-    flat.ap_status = ap.master ? 'ENGAGED' : 'OFF';
-    flat.ap_hdg    = ap.heading != null ? String(Math.round(ap.heading)).padStart(3, '0') + '°' : '---';
-    flat.ap_alt    = ap.altitude != null ? Math.round(ap.altitude) + ' ft' : '---';
-    flat.ap_vs     = ap.vertical_speed != null ? Math.round(ap.vertical_speed) + ' fpm' : '---';
+    flat.weapons = ship.weapons_armed ? 'ARMED' : 'SAFE';
+    flat.missiles = ship.missiles_remaining != null ? String(ship.missiles_remaining) : '---';
+    flat.mode = ship.decoupled_mode ? 'DECOUPLED' : 'COUPLED';
 
-    flat.wind        = env.wind_speed_kts != null ? String(Math.round(env.wind_direction)).padStart(3, '0') + '°/' + Math.round(env.wind_speed_kts) + 'kt' : '---';
-    flat.visibility  = env.visibility_sm != null ? env.visibility_sm.toFixed(1) + ' sm' : '---';
-    flat.temperature = env.temperature_c != null ? Math.round(env.temperature_c) + '°C' : '---';
-    flat.qnh         = env.barometer_inhg != null ? env.barometer_inhg.toFixed(2) + ' inHg' : '---';
-
-    const radios = d.radios || {};
-    flat.com1 = radios.com1_frequency != null ? radios.com1_frequency.toFixed(3) : '---';
-    flat.com2 = radios.com2_frequency != null ? radios.com2_frequency.toFixed(3) : '---';
-
-    flat.fuel_total = fuel.total_gallons != null ? fuel.total_gallons.toFixed(1) + ' gal' : '---';
+    flat.hostiles = combat.hostile_count != null ? String(combat.hostile_count) : '0';
+    flat.crime_stat = player.crime_stat != null ? String(player.crime_stat) : '0';
+    flat.target = combat.target_name || '---';
 
     return flat;
   }
@@ -389,14 +332,14 @@
         const data = JSON.parse(evt.data);
         const simActive = data.connected === true;
 
-        // Update sim LED based on actual SimConnect status, not WS status
+        // Update game LED based on actual game connection status, not WS status
         setTerminalLed(dom.telemetryLed, simActive);
 
         if (simActive && !state.simWasConnected) {
-          addSystemMessage('Telemetry link established — sim connected.');
+          addSystemMessage('Telemetry link established — game connected.');
           state.simWasConnected = true;
         } else if (!simActive && state.simWasConnected) {
-          addSystemMessage('Sim disconnected — telemetry paused.');
+          addSystemMessage('Game disconnected — telemetry paused.');
           state.simWasConnected = false;
         }
 
@@ -437,17 +380,17 @@
     if (opts.id) state.seenMessageIds.add(opts.id);
 
     const msg = document.createElement('div');
-    const isMerlin = sender === 'MERLIN';
-    msg.className = `chat-msg ${isMerlin ? 'merlin-msg' : sender === 'SYSTEM' ? 'system-msg' : 'captain-msg'}`;
+    const isHornet = sender === 'HORNET';
+    msg.className = `chat-msg ${isHornet ? 'merlin-msg' : sender === 'SYSTEM' ? 'system-msg' : 'captain-msg'}`;
 
     if (sender === 'SYSTEM') {
       msg.textContent = text;
     } else {
       const ts = `<span class="timestamp">[${timestamp()}]</span> `;
-      const senderSpan = isMerlin
-        ? `<span class="sender-merlin">MERLIN:</span> `
-        : `<span class="sender-captain">CAPTAIN:</span> `;
-      const textClass = isMerlin ? 'msg-text-merlin' : 'msg-text-captain';
+      const senderSpan = isHornet
+        ? `<span class="sender-merlin">HORNET:</span> `
+        : `<span class="sender-captain">CMDR:</span> `;
+      const textClass = isHornet ? 'msg-text-merlin' : 'msg-text-captain';
       const textSpan = `<span class="${textClass}">${escapeHtml(text)}</span>`;
       msg.innerHTML = ts + senderSpan + textSpan;
     }
@@ -468,7 +411,7 @@
     const msg = document.createElement('div');
     msg.className = 'chat-msg merlin-msg thinking-indicator';
     const ts = `<span class="timestamp">[${timestamp()}]</span> `;
-    const sender = `<span class="sender-merlin">MERLIN:</span> `;
+    const sender = `<span class="sender-merlin">HORNET:</span> `;
     msg.innerHTML = ts + sender + `<span class="msg-text-merlin thinking-dots">thinking</span>`;
     if (dom.chatMessages) dom.chatMessages.appendChild(msg);
     state.thinkingMsgEl = msg;
@@ -489,7 +432,7 @@
     const msg = document.createElement('div');
     msg.className = 'chat-msg merlin-msg';
     const ts = `<span class="timestamp">[${timestamp()}]</span> `;
-    const sender = `<span class="sender-merlin">MERLIN:</span> `;
+    const sender = `<span class="sender-merlin">HORNET:</span> `;
     msg.innerHTML = ts + sender + `<span class="msg-text-merlin" data-streaming></span><span class="typing-cursor"></span>`;
     if (dom.chatMessages) dom.chatMessages.appendChild(msg);
     state.streamingMsgEl = msg;
@@ -607,9 +550,9 @@
       state.chatReconnectAttempts = 0;
       setTerminalLed(dom.chatLed, true);
       if (!state.chatReconnecting) {
-        addSystemMessage('MERLIN terminal online.');
+        addSystemMessage('Super Hornet terminal online.');
       } else {
-        addSystemMessage('MERLIN terminal reconnected.');
+        addSystemMessage('Super Hornet terminal reconnected.');
       }
       state.chatReconnecting = false;
       updateConnectionQuality();
@@ -638,7 +581,7 @@
 
       if (!state.chatReconnecting) {
         state.chatReconnecting = true;
-        addSystemMessage('MERLIN terminal disconnected. Reconnecting...');
+        addSystemMessage('Super Hornet terminal disconnected. Reconnecting...');
       }
       updateConnectionQuality();
       setTimeout(connectChat, delay);
@@ -665,7 +608,7 @@
         handleChatMessage(msg);
       } catch (e) {
         // Non-JSON text fallback
-        addChatMessage('MERLIN', raw);
+        addChatMessage('HORNET', raw);
       }
       processed++;
     }
@@ -730,11 +673,11 @@
 
       case 'message':
         finishStreamingMessage();
-        addChatMessage(msg.sender || 'MERLIN', msg.text || '');
+        addChatMessage(msg.sender || 'HORNET', msg.text || '');
         break;
 
       case 'transcription':
-        addChatMessage('CAPTAIN', msg.text || '', {
+        addChatMessage('CMDR', msg.text || '', {
           id: `transcription-${msg.text}`,
         });
         setVoiceMode('thinking');
@@ -750,7 +693,7 @@
         break;
 
       case 'listening':
-        // Server signals MERLIN is ready for input after finishing response
+        // Server signals Super Hornet is ready for input after finishing response
         if (!state.isPlayingAudio && state.audioQueue.length === 0) {
           setVoiceMode('idle');
         }
@@ -778,7 +721,7 @@
       default:
         // Fallback: if there's text or content, show it
         if (msg.text || msg.content) {
-          addChatMessage(msg.sender || 'MERLIN', msg.text || msg.content);
+          addChatMessage(msg.sender || 'HORNET', msg.text || msg.content);
         }
     }
   }
@@ -786,12 +729,12 @@
   function sendChatText(text) {
     if (!text.trim()) return;
     if (!state.chatWs || state.chatWs.readyState !== WebSocket.OPEN) {
-      addSystemMessage('Cannot send: MERLIN terminal offline.');
+      addSystemMessage('Cannot send: Super Hornet terminal offline.');
       return;
     }
     // Barge-in: stop any playing TTS when user sends text
     bargeIn();
-    addChatMessage('CAPTAIN', text);
+    addChatMessage('CMDR', text);
     setVoiceMode('thinking');
     showThinkingIndicator();
     state.chatWs.send(JSON.stringify({ type: 'text', text }));
@@ -842,11 +785,11 @@
         break;
       case 'thinking':
         if (btn) btn.classList.add('thinking');
-        if (txt) { txt.classList.add('thinking'); txt.textContent = 'MERLIN THINKING...'; }
+        if (txt) { txt.classList.add('thinking'); txt.textContent = 'SUPER HORNET THINKING...'; }
         break;
       case 'speaking':
         if (btn) btn.classList.add('speaking');
-        if (txt) { txt.classList.add('speaking'); txt.textContent = 'MERLIN SPEAKING'; }
+        if (txt) { txt.classList.add('speaking'); txt.textContent = 'SUPER HORNET SPEAKING'; }
         break;
       default:
         if (txt) txt.textContent = 'IDLE';
@@ -857,7 +800,7 @@
     if (state.voiceMode === 'recording' || state._acquiringMic) return;
     state._acquiringMic = true;
 
-    // Barge-in: stop TTS if MERLIN is speaking
+    // Barge-in: stop TTS if Super Hornet is speaking
     bargeIn();
 
     try {
@@ -941,7 +884,7 @@
       state.chatWs.send(JSON.stringify({ type: 'audio_start', mime: blob.type }));
       state.chatWs.send(blob);
     } else {
-      addSystemMessage('Cannot send audio: MERLIN terminal offline.');
+      addSystemMessage('Cannot send audio: Super Hornet terminal offline.');
       setVoiceMode('idle');
     }
   }
@@ -1640,7 +1583,7 @@
   // ═══════════════════════════════════════════════════════
 
   function showWelcomeMessage() {
-    addSystemMessage('MERLIN AI Co-Pilot v1.1 ready.');
+    addSystemMessage('Super Hornet AI Wingman ready.');
     addSystemMessage('Voice: hold SPACE or click MIC. Text: type below.');
   }
 

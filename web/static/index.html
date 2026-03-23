@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MERLIN // AI CO-PILOT</title>
+  <title>SUPER HORNET // AI WINGMAN</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap" rel="stylesheet">
@@ -17,11 +17,11 @@
     <!-- HEADER BAR -->
     <header id="header">
       <div class="header-left">
-        <span class="header-logo">MERLIN</span>
+        <span class="header-logo">SUPER HORNET</span>
         <span class="header-separator">//</span>
-        <span class="header-subtitle">AI CO-PILOT</span>
+        <span class="header-subtitle">AI WINGMAN</span>
         <span class="header-separator">&mdash;</span>
-        <span class="header-squadron">VFA-103 JOLLY ROGERS</span>
+        <span class="header-squadron">STANTON SECTOR</span>
       </div>
       <div class="header-right">
         <!-- Connection quality indicator -->
@@ -31,9 +31,9 @@
         </div>
         <div class="header-divider" aria-hidden="true"></div>
         <div class="status-led-group" role="group" aria-label="Subsystem status indicators">
-          <div class="status-indicator" id="status-simconnect" role="status" aria-label="SimConnect status">
+          <div class="status-indicator" id="status-game" role="status" aria-label="Game connection status">
             <span class="led led-red" aria-hidden="true"></span>
-            <span class="status-label">SIM</span>
+            <span class="status-label">GAME</span>
           </div>
           <div class="status-indicator" id="status-whisper" role="status" aria-label="Speech-to-text status">
             <span class="led led-red" aria-hidden="true"></span>
@@ -53,10 +53,10 @@
 
     <!-- MAIN PANELS -->
     <main id="main">
-      <!-- TELEMETRY TERMINAL -->
-      <section class="terminal-panel" id="telemetry-panel" aria-label="Telemetry data">
+      <!-- SHIP STATUS TERMINAL -->
+      <section class="terminal-panel" id="telemetry-panel" aria-label="Ship status data">
         <div class="terminal-header">
-          <span class="terminal-title">TELEMETRY</span>
+          <span class="terminal-title">SHIP STATUS</span>
           <span class="terminal-led" id="telemetry-led" aria-hidden="true"></span>
         </div>
         <div class="terminal-content" id="telemetry-content">
@@ -64,22 +64,22 @@
         </div>
       </section>
 
-      <!-- MERLIN CHAT TERMINAL -->
-      <section class="terminal-panel" id="chat-panel" aria-label="MERLIN chat terminal">
+      <!-- SUPER HORNET CHAT TERMINAL -->
+      <section class="terminal-panel" id="chat-panel" aria-label="Super Hornet chat terminal">
         <div class="terminal-header">
-          <span class="terminal-title">MERLIN TERMINAL</span>
+          <span class="terminal-title">SUPER HORNET TERMINAL</span>
           <span class="terminal-led" id="chat-led" aria-hidden="true"></span>
         </div>
         <div class="terminal-content" id="chat-content">
           <div class="chat-messages" id="chat-messages" role="log" aria-live="polite" aria-label="Chat messages">
             <div class="chat-welcome" id="chat-welcome" aria-label="Welcome message">
-              <span class="chat-welcome-callsign">MERLIN ONLINE</span>
-              <span class="chat-welcome-prompt">Ready for tasking. Type a command below or hold SPACE to transmit voice.</span>
+              <span class="chat-welcome-callsign">SUPER HORNET ONLINE</span>
+              <span class="chat-welcome-prompt">Ready for tasking, Commander. Type a command below or hold SPACE to transmit voice.</span>
             </div>
           </div>
         </div>
         <div class="chat-input-row">
-          <input type="text" id="chat-input" placeholder="Enter command... (SPACE = push-to-talk)" autocomplete="off" spellcheck="false" aria-label="Chat input">
+          <input type="text" id="chat-input" placeholder="Enter command, Commander... (SPACE = push-to-talk)" autocomplete="off" spellcheck="false" aria-label="Chat input">
         </div>
       </section>
     </main>
