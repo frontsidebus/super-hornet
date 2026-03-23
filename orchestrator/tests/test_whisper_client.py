@@ -133,7 +133,7 @@ class TestTranscribeSuccess:
         data = call_args[1]["data"]
         assert data["model"] == _DEFAULT_MODEL
         assert "prompt" in data
-        assert "ATIS" in data["prompt"]
+        assert "Drake" in data["prompt"]  # SC vocabulary prompt
 
     def test_uses_default_language_when_not_overridden(
         self, whisper_client: WhisperClient, sample_audio: bytes

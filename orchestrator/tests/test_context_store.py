@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from orchestrator.context_store import PHASE_TOPICS, ContextStore
-from orchestrator.sim_client import FlightPhase, SimState
+from orchestrator.context_store import ACTIVITY_TOPICS, ContextStore
+from orchestrator.game_state import GameActivity, GameState, ShipStatus, PlayerStatus
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +91,7 @@ class TestDocumentIngestion:
             mock_client.get_or_create_collection.return_value = mock_chromadb_collection
             mock_client_cls.return_value = mock_client
 
-            store = ContextStore(chromadb_url="http://localhost:8000")
+            store = ContextStore(chromadb_url="http://localhost:8000", collection_name="hornet_knowledge")
 
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
                 f.write("A" * 250)
@@ -112,7 +112,7 @@ class TestDocumentIngestion:
             mock_client.get_or_create_collection.return_value = mock_chromadb_collection
             mock_client_cls.return_value = mock_client
 
-            store = ContextStore(chromadb_url="http://localhost:8000")
+            store = ContextStore(chromadb_url="http://localhost:8000", collection_name="hornet_knowledge")
 
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
                 f.write("Test content here")
@@ -136,7 +136,7 @@ class TestDocumentIngestion:
             mock_client.get_or_create_collection.return_value = mock_chromadb_collection
             mock_client_cls.return_value = mock_client
 
-            store = ContextStore(chromadb_url="http://localhost:8000")
+            store = ContextStore(chromadb_url="http://localhost:8000", collection_name="hornet_knowledge")
 
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
                 f.write("")
@@ -168,7 +168,7 @@ class TestQuery:
 
         assert len(results) == 2
         assert results[0]["content"] == "chunk one content"
-        assert results[0]["metadata"]["source"] == "poh.pdf"
+        assert results[0]["metadata"]["source"] == "sc_manual.pdf"
         assert results[0]["distance"] == pytest.approx(0.12)
 
     @pytest.mark.asyncio
@@ -217,15 +217,15 @@ class TestQuery:
 
 
 # ---------------------------------------------------------------------------
-# Flight-phase-aware context retrieval
+# Activity-aware context retrieval
 # ---------------------------------------------------------------------------
 
 
 class TestGetRelevantContext:
-    """Test get_relevant_context phase-based query building."""
+    """Test get_relevant_context activity-based query building."""
 
     @pytest.mark.asyncio
-    async def test_queries_with_phase_topics(self, mock_chromadb_collection: MagicMock) -> None:
+    async def test_queries_with_activity_topics(self, mock_chromadb_collection: MagicMock) -> None:
         with patch("orchestrator.context_store.chromadb.HttpClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.heartbeat.return_value = 1
@@ -233,9 +233,10 @@ class TestGetRelevantContext:
             mock_client_cls.return_value = mock_client
 
             store = ContextStore(chromadb_url="http://localhost:8000")
-            state = SimState(
-                aircraft="Cessna 172",
-                flight_phase=FlightPhase.TAKEOFF,
+            state = GameState(
+                activity=GameActivity.COMBAT,
+                player=PlayerStatus(in_ship=True),
+                ship=ShipStatus(name="Gladius"),
             )
             results = await store.get_relevant_context(state)
 
@@ -243,13 +244,13 @@ class TestGetRelevantContext:
         assert mock_chromadb_collection.query.called
 
     @pytest.mark.asyncio
-    async def test_aircraft_specific_docs_preferred(self) -> None:
-        """When aircraft-specific results exist, return them instead of general docs."""
+    async def test_ship_specific_docs_preferred(self) -> None:
+        """When ship-specific results exist, return them instead of general docs."""
         mock_coll = MagicMock()
-        # First call (aircraft-filtered) returns results
+        # First call (ship-filtered) returns results
         mock_coll.query.return_value = {
-            "documents": [["C172 specific content"]],
-            "metadatas": [[{"source": "c172_poh.pdf", "aircraft_type": "Cessna 172"}]],
+            "documents": [["Gladius specific content"]],
+            "metadatas": [[{"source": "gladius_guide.pdf", "ship_name": "Gladius"}]],
             "distances": [[0.1]],
         }
 
@@ -260,21 +261,25 @@ class TestGetRelevantContext:
             mock_client_cls.return_value = mock_client
 
             store = ContextStore(chromadb_url="http://localhost:8000")
-            state = SimState(aircraft="Cessna 172", flight_phase=FlightPhase.CRUISE)
+            state = GameState(
+                activity=GameActivity.COMBAT,
+                player=PlayerStatus(in_ship=True),
+                ship=ShipStatus(name="Gladius"),
+            )
             results = await store.get_relevant_context(state)
 
         assert len(results) == 1
-        assert results[0]["content"] == "C172 specific content"
+        assert results[0]["content"] == "Gladius specific content"
 
     @pytest.mark.asyncio
-    async def test_fallback_to_unfiltered_when_no_aircraft_results(self) -> None:
+    async def test_fallback_to_unfiltered_when_no_ship_results(self) -> None:
         call_count = 0
 
         def mock_query(**kwargs):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # Aircraft-filtered query returns nothing
+                # Ship-filtered query returns nothing
                 return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
             else:
                 # Unfiltered query returns results
@@ -294,7 +299,11 @@ class TestGetRelevantContext:
             mock_client_cls.return_value = mock_client
 
             store = ContextStore(chromadb_url="http://localhost:8000")
-            state = SimState(aircraft="Cessna 172", flight_phase=FlightPhase.CRUISE)
+            state = GameState(
+                activity=GameActivity.COMBAT,
+                player=PlayerStatus(in_ship=True),
+                ship=ShipStatus(name="Gladius"),
+            )
             results = await store.get_relevant_context(state)
 
         assert call_count == 2
@@ -302,23 +311,24 @@ class TestGetRelevantContext:
         assert results[0]["content"] == "general content"
 
 
-class TestPhaseTopics:
-    """Verify the PHASE_TOPICS mapping is complete and sensible."""
+class TestActivityTopics:
+    """Verify the ACTIVITY_TOPICS mapping is complete and sensible."""
 
-    def test_all_phases_have_topics(self) -> None:
-        for phase in FlightPhase:
-            assert phase in PHASE_TOPICS, f"Missing topics for {phase.value}"
+    def test_all_activities_have_topics(self) -> None:
+        for activity in GameActivity:
+            assert activity in ACTIVITY_TOPICS, f"Missing topics for {activity.value}"
 
     def test_topics_are_non_empty_lists(self) -> None:
-        for phase, topics in PHASE_TOPICS.items():
+        for activity, topics in ACTIVITY_TOPICS.items():
             assert isinstance(topics, list)
             assert len(topics) > 0
 
-    def test_takeoff_topics_include_emergency(self) -> None:
-        assert "engine failure" in PHASE_TOPICS[FlightPhase.TAKEOFF]
+    def test_combat_topics_include_weapons_or_shields(self) -> None:
+        combat_topics = ACTIVITY_TOPICS[GameActivity.COMBAT]
+        assert "weapons" in combat_topics or "shields" in combat_topics
 
-    def test_approach_topics_include_minimums(self) -> None:
-        assert "minimums" in PHASE_TOPICS[FlightPhase.APPROACH]
+    def test_mining_topics_include_mining(self) -> None:
+        assert "mining" in ACTIVITY_TOPICS[GameActivity.MINING]
 
 
 class TestDocumentCount:

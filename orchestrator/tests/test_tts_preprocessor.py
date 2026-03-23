@@ -1,4 +1,4 @@
-"""Tests for the aviation TTS preprocessor."""
+"""Tests for the Star Citizen TTS preprocessor."""
 
 from __future__ import annotations
 
@@ -8,200 +8,95 @@ from orchestrator.tts_preprocessor import preprocess_for_tts
 
 
 # ---------------------------------------------------------------------------
-# Flight levels
+# Star Citizen acronyms
 # ---------------------------------------------------------------------------
 
 
-class TestFlightLevels:
+class TestSCAcronyms:
     @pytest.mark.parametrize(
         "input_text,expected",
         [
-            ("Climb to FL350", "Climb to flight level tree fife zero"),
-            ("Descend FL180", "Descend flight level one eight zero"),
-            ("Maintain FL045", "Maintain flight level zero four fife"),
-            ("Cross FL240", "Cross flight level two four zero"),
-            ("At FL410", "At flight level four one zero"),
+            ("Switch to SCM mode", "Switch to S C M mode"),
+            ("Engage QT to Hurston", "Engage quantum travel to Hurston"),
+            ("You earned 500 aUEC", "You earned five zero zero alpha U E C"),
+            ("Price is 200 UEC", "Price is two zero zero U E C"),
+            ("Load 32 SCU of cargo", "Load 32 S C U of cargo"),
+            ("Hit them with the EMP", "Hit them with the E M P"),
+            ("Check your HUD", "Check your H U D"),
+            ("Exit via EVA", "Exit via E V A"),
+            ("An NPC vendor", "An N P C vendor"),
+            ("This is a PVP zone", "This is a P V P zone"),
+            ("Great for PVE missions", "Great for P V E missions"),
+            ("High DPS loadout", "High D P S loadout"),
+            ("Low IR signature", "Low I R signature"),
+            ("Reduce your EM emissions", "Reduce your E M emissions"),
+            ("You have CS level 3", "You have crime stat level 3"),
+            ("Spool the QD", "Spool the quantum drive"),
+            ("Check the MFD", "Check the M F D"),
         ],
     )
-    def test_flight_level(self, input_text: str, expected: str) -> None:
+    def test_acronym_expansion(self, input_text: str, expected: str) -> None:
         assert preprocess_for_tts(input_text) == expected
 
 
 # ---------------------------------------------------------------------------
-# Altitudes
+# Star Citizen currency (aUEC / UEC)
 # ---------------------------------------------------------------------------
 
 
-class TestAltitudes:
+class TestSCCurrency:
     @pytest.mark.parametrize(
         "input_text,expected",
         [
-            ("Descend to 3500ft", "Descend to three thousand five hundred feet"),
-            (
-                "Maintain 3,500 feet",
-                "Maintain three thousand five hundred feet",
-            ),
-            ("Climb to 10000ft", "Climb to ten thousand feet"),
-            ("At 500ft", "At five hundred feet"),
-            ("Level at 8000ft", "Level at eight thousand feet"),
+            ("Bounty is 15000 aUEC", "Bounty is fifteen thousand alpha U E C"),
+            ("Costs 250 UEC", "Costs two five zero U E C"),
+            ("Earned 1,500,000 aUEC", "Earned one million five hundred thousand alpha U E C"),
+            ("Price: 99 aUEC", "Price: nine nine alpha U E C"),
+            ("Worth 0 UEC", "Worth zero U E C"),
         ],
     )
-    def test_altitude(self, input_text: str, expected: str) -> None:
+    def test_currency_expansion(self, input_text: str, expected: str) -> None:
         assert preprocess_for_tts(input_text) == expected
 
 
 # ---------------------------------------------------------------------------
-# Headings
+# Star Citizen distances (km / m)
 # ---------------------------------------------------------------------------
 
 
-class TestHeadings:
+class TestSCDistances:
     @pytest.mark.parametrize(
         "input_text,expected",
         [
-            ("Turn HDG 270", "Turn heading two seven zero"),
-            ("heading 090", "heading zero niner zero"),
-            ("Fly HDG 360", "Fly heading tree six zero"),
-            ("HDG 180", "heading one eight zero"),
+            ("Target 3.5km out", "Target three point five kilometers out"),
+            ("Range 12km", "Range twelve kilometers"),
+            ("Distance 800m", "Distance eight hundred meters"),
+            ("Only 1km away", "Only one kilometer away"),
+            ("At 1m distance", "At one meter distance"),
         ],
     )
-    def test_heading(self, input_text: str, expected: str) -> None:
+    def test_distance_expansion(self, input_text: str, expected: str) -> None:
         assert preprocess_for_tts(input_text) == expected
 
 
 # ---------------------------------------------------------------------------
-# Frequencies
+# Shield / fuel / hull percentages
 # ---------------------------------------------------------------------------
 
 
-class TestFrequencies:
+class TestSCPercentages:
     @pytest.mark.parametrize(
         "input_text,expected",
         [
-            (
-                "Contact tower on 118.30",
-                "Contact tower on one one eight point tree zero",
-            ),
-            (
-                "Monitor frequency 121.5",
-                "Monitor frequency one two one point fife",
-            ),
-            (
-                "Tune 119.10",
-                "Tune one one niner point one zero",
-            ),
-            (
-                "Contact approach 124.35",
-                "Contact approach one two four point tree fife",
-            ),
-            (
-                "ATIS 127.85",
-                "ATIS one two seven point eight fife",
-            ),
+            ("Shields at 45%", "Shields at forty five percent"),
+            ("Hull at 100% hull", "Hull at one hundred percent hull"),
+            ("Fuel down to 10% hydrogen", "Fuel down to ten percent hydrogen"),
+            ("0% shields remaining", "zero percent shields remaining"),
+            ("Quantum fuel 75% quantum", "Quantum fuel seventy five percent quantum"),
+            ("Power at 50% power", "Power at fifty percent power"),
         ],
     )
-    def test_frequency(self, input_text: str, expected: str) -> None:
-        assert preprocess_for_tts(input_text) == expected
-
-
-# ---------------------------------------------------------------------------
-# Runway designators
-# ---------------------------------------------------------------------------
-
-
-class TestRunways:
-    @pytest.mark.parametrize(
-        "input_text,expected",
-        [
-            (
-                "Cleared to land RWY 27L",
-                "Cleared to land runway two seven left",
-            ),
-            ("Taxi to RWY 09R", "Taxi to runway zero niner right"),
-            ("Departing runway 36C", "Departing runway tree six center"),
-            ("RWY 18", "runway one eight"),
-            ("Line up RWY 04", "Line up runway zero four"),
-        ],
-    )
-    def test_runway(self, input_text: str, expected: str) -> None:
-        assert preprocess_for_tts(input_text) == expected
-
-
-# ---------------------------------------------------------------------------
-# Squawk codes
-# ---------------------------------------------------------------------------
-
-
-class TestSquawk:
-    @pytest.mark.parametrize(
-        "input_text,expected",
-        [
-            ("Squawk 7700", "squawk seven seven zero zero"),
-            ("squawk 1200", "squawk one two zero zero"),
-            ("Squawk 0420", "squawk zero four two zero"),
-            ("squawk 7500", "squawk seven fife zero zero"),
-        ],
-    )
-    def test_squawk(self, input_text: str, expected: str) -> None:
-        assert preprocess_for_tts(input_text) == expected
-
-
-# ---------------------------------------------------------------------------
-# Speeds
-# ---------------------------------------------------------------------------
-
-
-class TestSpeeds:
-    @pytest.mark.parametrize(
-        "input_text,expected",
-        [
-            ("Reduce to 250kt", "Reduce to two hundred fifty knots"),
-            ("Speed 180kts", "Speed one hundred eighty knots"),
-            ("V1", "V one"),
-            ("Rotate at Vr", "Rotate at V R"),
-            ("V2 plus 10", "V two plus 10"),
-        ],
-    )
-    def test_speed(self, input_text: str, expected: str) -> None:
-        assert preprocess_for_tts(input_text) == expected
-
-
-# ---------------------------------------------------------------------------
-# QNH / Altimeter
-# ---------------------------------------------------------------------------
-
-
-class TestAltimeter:
-    @pytest.mark.parametrize(
-        "input_text,expected",
-        [
-            ("QNH 1013", "Q N H one zero one tree"),
-            ("QNH 0992", "Q N H zero niner niner two"),
-            ("Set 29.92 inHg", "Set two niner niner two inches"),
-            ("Altimeter 30.12 inHg", "Altimeter tree zero one two inches"),
-        ],
-    )
-    def test_altimeter(self, input_text: str, expected: str) -> None:
-        assert preprocess_for_tts(input_text) == expected
-
-
-# ---------------------------------------------------------------------------
-# Distance
-# ---------------------------------------------------------------------------
-
-
-class TestDistance:
-    @pytest.mark.parametrize(
-        "input_text,expected",
-        [
-            ("5nm from the field", "five nautical miles from the field"),
-            ("1 NM out", "one nautical mile out"),
-            ("DME 12.3", "D M E one two point tree"),
-            ("DME 5", "D M E fife"),
-            ("At 20nm", "At twenty nautical miles"),
-        ],
-    )
-    def test_distance(self, input_text: str, expected: str) -> None:
+    def test_percentage_expansion(self, input_text: str, expected: str) -> None:
         assert preprocess_for_tts(input_text) == expected
 
 
@@ -238,7 +133,7 @@ class TestSpecialChars:
             ("5\u00b0 nose up", "5 degrees nose up"),
             ("A \u2014 pause", "A , pause"),
             ("3 \u2013 5", "3 to 5"),
-            ("~200ft", "approximately two hundred feet"),
+            ("~200m", "approximately two hundred meters"),
             ("A & B", "A and B"),
         ],
     )
@@ -256,19 +151,16 @@ class TestCombined:
         "input_text,expected",
         [
             (
-                "Descend to FL350 and contact tower on 118.30",
-                "Descend to flight level tree fife zero and contact tower on"
-                " one one eight point tree zero",
+                "Target 3.5km out, shields at 45%",
+                "Target three point five kilometers out, shields at forty five percent",
             ),
             (
-                "Turn HDG 270, descend to 3500ft, squawk 1200",
-                "Turn heading two seven zero, descend to three thousand"
-                " five hundred feet, squawk one two zero zero",
+                "Bounty is 15000 aUEC, engage QT to Hurston",
+                "Bounty is fifteen thousand alpha U E C, engage quantum travel to Hurston",
             ),
             (
-                "Cleared ILS RWY 27L, maintain 250kt until 5nm",
-                "Cleared I L S runway two seven left, maintain two hundred"
-                " fifty knots until five nautical miles",
+                "**Warning:** Hull at 20% hull, range 800m",
+                "Warning: Hull at twenty percent hull, range eight hundred meters",
             ),
         ],
     )
@@ -303,35 +195,3 @@ class TestEdgeCases:
         assert "First" in result
         assert "Second" in result
         assert "-" not in result
-
-
-# ---------------------------------------------------------------------------
-# Aviation acronyms
-# ---------------------------------------------------------------------------
-
-
-class TestAviationAcronyms:
-    @pytest.mark.parametrize(
-        "input_text,expected",
-        [
-            ("Check the IFR chart", "Check the I F R chart"),
-            ("File VFR", "File V F R"),
-            ("Altitude 500 AGL", "Altitude 500 A G L"),
-            ("Altitude 3000 MSL", "Altitude 3000 M S L"),
-            ("PIREP reported", "pilot report reported"),
-            ("Fly the RNAV approach", "Fly the R NAV approach"),
-            ("TCAS alert", "T CAS alert"),
-            ("GPWS warning", "G P W S warning"),
-            ("Tune the VOR", "Tune the V O R"),
-            ("Cleared ILS approach", "Cleared I L S approach"),
-            ("GPS direct", "G P S direct"),
-        ],
-    )
-    def test_acronym_expansion(self, input_text: str, expected: str) -> None:
-        assert preprocess_for_tts(input_text) == expected
-
-    def test_pronounceable_acronyms_unchanged(self) -> None:
-        """Acronyms that are already pronounceable should pass through."""
-        for word in ("NOTAM", "SIGMET", "ATIS", "UNICOM", "SID", "STAR", "METAR", "TAF"):
-            result = preprocess_for_tts(f"Check the {word}")
-            assert word in result
