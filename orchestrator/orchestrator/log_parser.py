@@ -119,10 +119,27 @@ class LogParserModule:
         loop = asyncio.get_running_loop()
 
         try:
-            # Open the file and seek to end so we only process new lines
+            # Open the file and read the last chunk for initial state, then tail new lines
             fp = await loop.run_in_executor(None, lambda: open(self._log_path, "r", encoding="utf-8", errors="replace"))
             try:
+                # Read the last ~100KB to bootstrap location and ship state
                 await loop.run_in_executor(None, lambda: fp.seek(0, 2))  # seek to EOF
+                file_size = await loop.run_in_executor(None, fp.tell)
+                backtrack = min(file_size, 100_000)
+                if backtrack > 0:
+                    await loop.run_in_executor(None, lambda: fp.seek(file_size - backtrack))
+                    bootstrap_chunk = await loop.run_in_executor(None, fp.read)
+                    for line in bootstrap_chunk.split("\n"):
+                        stripped = line.rstrip("\r")
+                        if stripped:
+                            event = self._parse_line(stripped)
+                            if event is not None:
+                                self._recent_events.append(event)
+                    logger.info(
+                        "Bootstrapped %d events from last %dKB of log",
+                        len(self._recent_events),
+                        backtrack // 1024,
+                    )
 
                 buffer = ""
                 while self._running:

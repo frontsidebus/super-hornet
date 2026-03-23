@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from .game_state import GameActivity, GameState
 from .health import ConnectionState
+from .log_patterns import extract_ship_name
 
 if TYPE_CHECKING:
     from .log_parser import LogParserModule
@@ -155,6 +156,16 @@ class GameStateClient:
             state.player.location_system = system
             state.player.location_body = body
             state.player.location_zone = zone
+
+            # Detect ship from recent log events (entity references like ANVL_Asgard_123)
+            for e in reversed(events[-50:]):
+                ship_name = e.data.get("ship")
+                if not ship_name and e.raw_line:
+                    ship_name = extract_ship_name(e.raw_line)
+                if ship_name:
+                    state.ship.name = ship_name
+                    state.player.in_ship = True
+                    break
 
         # Ingest vision data (if available and recently updated)
         if self._vision_module and self._vision_module.latest_analysis:
