@@ -1,3 +1,3 @@
-"""MERLIN - AI co-pilot orchestration layer for Microsoft Flight Simulator 2024."""
+"""Super Hornet - AI agent platform for Star Citizen."""
 
-__version__ = "1.1.0"
+__version__ = "0.1.0"

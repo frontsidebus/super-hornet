@@ -1,7 +1,7 @@
 """Audio preprocessing utilities for improving Whisper transcription accuracy.
 
 Provides noise reduction, silence trimming, normalization, and format conversion
-optimized for cockpit audio environments.
+optimized for Star Citizen cockpit audio environments.
 """
 
 from __future__ import annotations
@@ -15,23 +15,31 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Aviation-specific vocabulary used as an initial_prompt hint for Whisper.
+# Star Citizen vocabulary used as an initial_prompt hint for Whisper.
 # This biases the model toward recognizing these terms without restricting output.
-AVIATION_PROMPT = (
-    "ATIS, METAR, TAF, ILS, VOR, NDB, DME, GPS, RNAV, RNP, SID, STAR, "
-    "squawk, altimeter, QNH, QFE, flight level, "
-    "roger, wilco, affirmative, negative, mayday, pan-pan, "
-    "clearance, taxi, takeoff, go-around, missed approach, "
-    "heading, altitude, airspeed, vertical speed, "
-    "flaps, gear, trim, throttle, mixture, prop, "
-    "Cessna, Boeing, Airbus, Piper, Beechcraft, "
+SC_VOCABULARY_PROMPT = (
+    # Ship manufacturers
+    "Drake, Aegis, Anvil, RSI, Origin, MISC, Consolidated Outland, "
+    "Crusader Industries, Argo, Greycat, Tumbril, Esperia, Gatac, Aopoa, "
+    # Ships
+    "Constellation, Hornet, Gladius, Cutlass, Freelancer, Carrack, "
+    "Hammerhead, Caterpillar, Reclaimer, Prospector, MOLE, Vulture, "
+    "Avenger, Arrow, Sabre, Vanguard, Retaliator, Eclipse, Herald, "
+    "Terrapin, Pisces, C2 Hercules, A2 Hercules, M2 Hercules, "
+    "890 Jump, 600i, 400i, 100i, Nomad, Mustang, Aurora, "
+    # Locations
+    "Stanton, Pyro, Nyx, Crusader, Hurston, ArcCorp, microTech, "
+    "Lorville, New Babbage, Area18, Orison, Port Olisar, Grim HEX, "
+    "Port Tressler, Everus Harbor, Baijini Point, "
+    # Game terms
+    "quantum travel, quantum drive, MobiGlas, aUEC, UEC, SCM, "
+    "afterburner, decoupled, coupled, interdiction, comm array, "
+    "armistice zone, crime stat, CrimeStat, salvage, mining, "
+    "bounty hunting, cargo, SCU, "
+    # NATO phonetic alphabet
     "alpha, bravo, charlie, delta, echo, foxtrot, golf, hotel, india, "
     "juliet, kilo, lima, mike, november, oscar, papa, quebec, romeo, "
-    "sierra, tango, uniform, victor, whiskey, x-ray, yankee, zulu, "
-    "knots, feet, nautical miles, "
-    "VREF, V1, VR, V2, VNE, VNO, VS0, VS1, VFE, "
-    "autopilot, LNAV, VNAV, localizer, glideslope, "
-    "Captain, MERLIN"
+    "sierra, tango, uniform, victor, whiskey, x-ray, yankee, zulu"
 )
 
 # Minimum audio duration in seconds to bother transcribing

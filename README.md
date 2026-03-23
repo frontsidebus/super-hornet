@@ -1,184 +1,72 @@
-# MERLIN
+# Super Hornet
 
-**AI Co-Pilot for Microsoft Flight Simulator 2024**
+AI agent platform for [Star Citizen](https://robertsspaceindustries.com/en/). Voice-interactive wingman with real-time game awareness via screen capture and log parsing, powered by Claude.
 
-MERLIN is a voice-interactive AI co-pilot powered by [Claude](https://www.anthropic.com/claude) that connects to MSFS 2024 via SimConnect. It provides real-time flight guidance, checklist management, and situational awareness through a browser-based cockpit UI -- delivered with the personality of a Navy Test Pilot who has seen it all.
+## What It Does
 
-> *"Airdale" is Navy slang for a naval aviator. Fitting, because MERLIN flies right seat.*
+Super Hornet is your AI co-pilot in the verse. It can:
 
----
+- **See your game** -- Captures and analyzes your HUD via Claude Vision (shields, fuel, radar, quantum drive status)
+- **Track events** -- Parses `game.log` in real-time for kills, deaths, location changes, and combat events
+- **Advise on trades** -- Queries UEX Corp API for live commodity prices and optimal trade routes
+- **Talk to you** -- Voice interaction via push-to-talk or voice activity detection (Whisper STT + ElevenLabs TTS)
+- **Learn and act** -- Builds a skill library of verified action sequences and can optionally execute them via input simulation
 
 ## Architecture
 
+**Constellation** -- three decoupled layers:
+
 ```
-                                          +-------------+
-                                          |   Claude    |
-                                          |    API      |
-                                          +------+------+
-                                                 |
-+----------+   SimConnect   +------------+  WS   +------------+  HTTP  +-----------+
-|          |<-------------->|  SimConnect |<------>|    Web     |<------>|  Browser  |
-| MSFS 2024|  (telemetry)   |   Bridge   |        |   Server   |        |    UI     |
-|          |                |  (C# .NET) |        |  (FastAPI) |        | (Cockpit) |
-+----------+                +------------+        +-----+------+        +-----------+
-                                                  |     |      |
-                                          +-------+ +---+----+ +--------+
-                                          |         |        |          |
-                                     +----+---+ +---+----+ +-+-------+ |
-                                     | Whisper | | Chroma | |Eleven   | |
-                                     |  STT    | |   DB   | | Labs    | |
-                                     | (Docker)| | (Docker)| | TTS    | |
-                                     +---------+ +--------+ +---------+ |
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   PERCEPTION    │    │   REASONING      │    │   ACTION        │
+│                 │    │                  │    │                 │
+│ • game.log      │───▶│ • Claude API     │───▶│ • Voice output  │
+│ • Screen capture│    │ • Tool use       │    │ • Input sim     │
+│ • UEX Corp API  │    │ • Skill library  │    │ • Overlay UI    │
+│ • SC Wiki API   │    │ • Knowledge base │    │                 │
+│ • Voice input   │    │                  │    │                 │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
 ```
-
----
-
-## Features
-
-- **Live telemetry** -- airspeed, altitude, attitude, engine params, and control surfaces streamed in real time
-- **Voice input/output** -- Whisper STT with aviation vocabulary prompting and ElevenLabs WebSocket streaming TTS
-- **Silero VAD** -- optional neural voice activity detection for low-latency speech endpoint detection
-- **ICAO-compliant aviation number pronunciation** -- automatic conversion of flight levels, headings, frequencies, and squawk codes to standard phraseology for TTS
-- **AI co-pilot with flight-phase awareness** -- automatic phase detection (preflight through rollout) drives checklists and proactive callouts
-- **Barge-in interruption** -- speak or type while MERLIN is responding to cancel and redirect
-- **Push-to-talk and VAD modes** -- toggle between voice activation and manual push-to-talk
-- **RAG-based manual lookup** -- aircraft POH and procedures chunked and embedded in ChromaDB for instant retrieval
-- **Auto-reconnect** -- graceful degradation and automatic reconnection to SimConnect, Whisper, and ChromaDB
-- **Browser-based cockpit UI** -- TARS-style display with telemetry gauges, chat, and audio controls
-
----
 
 ## Quick Start
 
-### Prerequisites
-
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) (Windows, for the SimConnect bridge)
-- Microsoft Flight Simulator 2024 with the SDK installed
-- API keys: [Anthropic](https://console.anthropic.com/) (required), [ElevenLabs](https://elevenlabs.io/) (required for voice)
-
-### 1. Clone and configure
-
 ```bash
-git clone https://github.com/frontsidebus/airdale.git
-cd airdale
+# 1. Clone and configure
 cp .env.example .env
-# Edit .env with your API keys (ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID)
-```
+# Edit .env with your API keys (Anthropic, ElevenLabs) and SC game.log path
 
-### 2. Start everything
-
-From WSL, run the startup script to launch all components (Docker services, SimConnect bridge, and web server):
-
-```bash
-./scripts/start.sh
-```
-
-This starts Whisper (STT), ChromaDB (RAG), builds and launches the SimConnect bridge, and starts the web server. First startup downloads the Whisper model from HuggingFace (~1.5 GB for the default `medium` model) -- allow a few minutes.
-
-To stop everything:
-
-```bash
-./scripts/stop.sh
-```
-
-### 3. Open the cockpit UI
-
-Navigate to [http://localhost:3838](http://localhost:3838) in your browser. MERLIN is ready.
-
-> **WSL2 note:** If running Docker in WSL2, set `SIMCONNECT_WS_HOST` in `.env` to your Windows host IP (not `localhost`). See [docs/INSTALL.md](docs/INSTALL.md) for details.
-
-<details>
-<summary>Manual startup (without script)</summary>
-
-```bash
-# Docker services
+# 2. Start services
 docker compose up -d
 
-# SimConnect bridge (Windows terminal)
-cd simconnect-bridge
-dotnet restore && dotnet build
-dotnet run
-
-# Web server (WSL)
-cd web
-source ../orchestrator/.venv/bin/activate
-python run.py
+# 3. Install and run
+cd orchestrator
+pip install -e ".[dev]"
+hornet
 ```
 
-</details>
+See [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) for detailed setup instructions.
 
----
+## Requirements
 
-## Tech Stack
+- Python 3.11+
+- Docker Desktop (for Whisper + ChromaDB)
+- Star Citizen installed (for game.log access)
+- Anthropic API key
+- ElevenLabs API key (for voice output)
 
-| Layer | Technology |
-|---|---|
-| SimConnect Bridge | C# / .NET 8 (out-of-process) |
-| Web Server | Python 3.11+ / FastAPI |
-| AI Inference | Anthropic Claude API with tool use |
-| Speech-to-Text | faster-whisper (CTranslate2) via Docker |
-| Text-to-Speech | ElevenLabs streaming API |
-| Vector Store / RAG | ChromaDB with sentence-transformers |
-| IPC | WebSocket (JSON) |
-| Frontend | HTML/JS cockpit display |
-| Config | pydantic-settings with .env |
+## EAC Compliance
 
----
+Super Hornet is designed to be fully compatible with Easy Anti-Cheat:
 
-## UI
-
-<!-- TODO: Add screenshot of the cockpit UI -->
-
-The browser UI features a TARS-style cockpit display with:
-- Real-time telemetry gauges (airspeed, altitude, heading, vertical speed)
-- Chat panel with conversation history
-- Audio controls (push-to-talk, VAD toggle, volume)
-- Flight phase indicator
-- Connection status for all subsystems
-
----
-
-## Project Structure
-
-```
-airdale/
-├── web/                    # FastAPI web server and browser UI
-│   ├── server.py           # Backend: telemetry WS, chat, STT/TTS
-│   └── static/             # Frontend: cockpit display
-├── orchestrator/           # Python orchestration package
-│   ├── orchestrator/       # Source: config, sim_client, claude_client, voice, etc.
-│   └── pyproject.toml      # Build config (hatch + ruff)
-├── simconnect-bridge/      # C# .NET SimConnect bridge (runs on Windows)
-├── scripts/
-│   ├── start.sh            # Start all MERLIN components
-│   └── stop.sh             # Gracefully stop everything
-├── docker-compose.yml      # Whisper, ChromaDB, orchestrator services
-├── .env.example            # Environment variable template
-└── docs/
-    ├── ARCHITECTURE.md     # System architecture deep-dive
-    └── INSTALL.md          # Detailed installation guide
-```
-
----
-
-## Documentation
-
-- [Installation Guide](docs/INSTALL.md) -- full setup walkthrough with troubleshooting
-- [Architecture](docs/ARCHITECTURE.md) -- system design, data flows, and component descriptions
-- [Project Conventions](CLAUDE.md) -- architecture decisions, code style, development commands
-
----
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/your-feature`)
-3. Ensure `ruff check` passes for Python code
-4. Submit a pull request with a clear description
-
----
+- **No memory reading** -- all game state comes from screen capture and log parsing
+- **No DLL injection** -- completely out-of-process
+- **No game file modification** -- read-only access to game.log
+- **Input simulation** -- uses OS-level DirectInput (same as VoiceAttack), disabled by default
 
 ## License
 
-[MIT](LICENSE) -- Copyright 2026 frontsidebus
+[MIT](LICENSE)
+
+## Credits
+
+Forked from [airdale/MERLIN](https://github.com/frontsidebus/airdale) by frontsidebus.

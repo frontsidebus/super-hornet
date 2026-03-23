@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from orchestrator.audio_processing import AVIATION_PROMPT
+from orchestrator.audio_processing import SC_VOCABULARY_PROMPT
 from orchestrator.whisper_client import (
     TranscriptionResult,
     WhisperClient,
@@ -64,7 +64,7 @@ class TestWhisperClientInit:
 
     def test_default_initial_prompt(self) -> None:
         c = WhisperClient()
-        assert c.initial_prompt == AVIATION_PROMPT
+        assert c.initial_prompt == SC_VOCABULARY_PROMPT
 
     def test_custom_initial_prompt(self) -> None:
         c = WhisperClient(initial_prompt="custom terms")

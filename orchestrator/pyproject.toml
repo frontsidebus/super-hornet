@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "merlin-orchestrator"
-version = "1.1.0"
-description = "MERLIN - AI co-pilot orchestration layer for Microsoft Flight Simulator 2024"
+name = "super-hornet"
+version = "0.1.0"
+description = "Super Hornet - AI agent platform for Star Citizen"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.39.0",
@@ -19,6 +19,7 @@ dependencies = [
     "numpy>=1.26",
     "mss>=9.0",
     "Pillow>=10.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +32,9 @@ vad = [
     "torch>=2.0",
     "onnxruntime>=1.16",
 ]
+input = [
+    "pydirectinput>=1.0",
+]
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
@@ -39,7 +43,7 @@ test = [
 ]
 
 [project.scripts]
-merlin = "orchestrator.main:run"
+hornet = "orchestrator.main:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["orchestrator"]

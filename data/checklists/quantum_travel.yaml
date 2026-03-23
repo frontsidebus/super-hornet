@@ -1,0 +1,74 @@
+# =============================================================================
+# Super Hornet Checklist — Quantum Travel
+# =============================================================================
+# Procedure for spooling and engaging the quantum drive to travel between
+# points of interest in the Stanton system.
+# =============================================================================
+
+name: Quantum Travel
+activity: QUANTUM_TRAVEL
+
+steps:
+  # --- Target Selection ---
+  - description: "Open Starmap (F2)"
+    action: press_key
+    parameters: { key: "F2" }
+    wait_after_ms: 1500
+
+  - description: "Select destination in Starmap"
+    action: wait
+    parameters: { duration: 2.0 }
+    wait_after_ms: 0
+
+  - description: "Set route and close Starmap"
+    action: press_key
+    parameters: { key: "F2" }
+    wait_after_ms: 500
+
+  # --- Alignment ---
+  - description: "Activate quantum drive mode (press B)"
+    action: press_key
+    parameters: { key: "B" }
+    wait_after_ms: 1000
+
+  - description: "Point ship at quantum marker (align reticle)"
+    action: wait
+    parameters: { duration: 3.0 }
+    wait_after_ms: 0
+
+  - description: "Wait for quantum drive spool to complete"
+    action: wait
+    parameters: { duration: 5.0 }
+    wait_after_ms: 0
+
+  - description: "Verify spool at 100% and alignment lock"
+    action: wait
+    parameters: { duration: 0.5 }
+    wait_after_ms: 0
+
+  # --- Engage ---
+  - description: "Engage quantum drive (hold B)"
+    action: hold_key
+    parameters: { key: "B", duration: 1.0 }
+    wait_after_ms: 2000
+
+  - description: "Monitor quantum travel HUD — watch for interdiction alerts"
+    action: wait
+    parameters: { duration: 5.0 }
+    wait_after_ms: 0
+
+  # --- Arrival ---
+  - description: "Ship auto-drops from quantum at destination"
+    action: wait
+    parameters: { duration: 2.0 }
+    wait_after_ms: 0
+
+  - description: "Re-orient and assess surroundings"
+    action: wait
+    parameters: { duration: 1.0 }
+    wait_after_ms: 0
+
+  - description: "Check fuel level — plan next jump if needed"
+    action: wait
+    parameters: { duration: 0.5 }
+    wait_after_ms: 0

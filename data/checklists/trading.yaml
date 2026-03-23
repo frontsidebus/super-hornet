@@ -1,0 +1,115 @@
+# =============================================================================
+# Super Hornet Checklist — Trading Run
+# =============================================================================
+# Procedures for cargo trading between stations in Star Citizen.
+# Applicable to cargo-capable ships; the Super Hornet has limited cargo
+# but these steps cover the general trading workflow.
+# =============================================================================
+
+name: Trading Run
+activity: TRADING
+
+steps:
+  # --- Planning ---
+  - description: "Check commodity prices via MobiGlas (F1) or external tool"
+    action: press_key
+    parameters: { key: "F1" }
+    wait_after_ms: 2000
+
+  - description: "Identify profitable trade route (buy low, sell high)"
+    action: wait
+    parameters: { duration: 3.0 }
+    wait_after_ms: 0
+
+  - description: "Verify available funds (aUEC) for purchase"
+    action: wait
+    parameters: { duration: 1.0 }
+    wait_after_ms: 0
+
+  - description: "Close MobiGlas"
+    action: press_key
+    parameters: { key: "F1" }
+    wait_after_ms: 500
+
+  # --- Purchase ---
+  - description: "Land at buy-location station or outpost"
+    action: wait
+    parameters: { duration: 5.0 }
+    wait_after_ms: 0
+
+  - description: "Exit ship and locate trade terminal"
+    action: hold_key
+    parameters: { key: "F", duration: 0.5 }
+    wait_after_ms: 2000
+
+  - description: "Interact with trade terminal (F)"
+    action: press_key
+    parameters: { key: "F" }
+    wait_after_ms: 1500
+
+  - description: "Select commodity to buy"
+    action: mouse_click
+    parameters: { button: "left" }
+    wait_after_ms: 500
+
+  - description: "Set purchase quantity"
+    action: wait
+    parameters: { duration: 1.0 }
+    wait_after_ms: 0
+
+  - description: "Confirm purchase"
+    action: mouse_click
+    parameters: { button: "left" }
+    wait_after_ms: 1000
+
+  # --- Transport ---
+  - description: "Return to ship and complete startup checklist"
+    action: wait
+    parameters: { duration: 5.0 }
+    wait_after_ms: 0
+
+  - description: "Set quantum travel destination to sell location"
+    action: press_key
+    parameters: { key: "F2" }
+    wait_after_ms: 1500
+
+  - description: "Quantum travel to destination"
+    action: hold_key
+    parameters: { key: "B", duration: 1.0 }
+    wait_after_ms: 5000
+
+  # --- Sale ---
+  - description: "Land at sell-location station"
+    action: wait
+    parameters: { duration: 5.0 }
+    wait_after_ms: 0
+
+  - description: "Exit ship and locate trade terminal"
+    action: hold_key
+    parameters: { key: "F", duration: 0.5 }
+    wait_after_ms: 2000
+
+  - description: "Interact with trade terminal"
+    action: press_key
+    parameters: { key: "F" }
+    wait_after_ms: 1500
+
+  - description: "Select commodity to sell"
+    action: mouse_click
+    parameters: { button: "left" }
+    wait_after_ms: 500
+
+  - description: "Set sell quantity (max)"
+    action: wait
+    parameters: { duration: 1.0 }
+    wait_after_ms: 0
+
+  - description: "Confirm sale and collect profit"
+    action: mouse_click
+    parameters: { button: "left" }
+    wait_after_ms: 1000
+
+  - description: "Verify profit in MobiGlas wallet"
+    action: press_key
+    parameters: { key: "F1" }
+    wait_after_ms: 1500

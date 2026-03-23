@@ -1,0 +1,90 @@
+# =============================================================================
+# Super Hornet Checklist — Combat Engagement
+# =============================================================================
+# Procedures for engaging hostile targets in the F7C-M Super Hornet.
+# Covers target acquisition, weapon management, and defensive manoeuvres.
+# =============================================================================
+
+name: Combat Engagement
+activity: COMBAT
+
+steps:
+  # --- Threat Detection ---
+  - description: "Scan for contacts — check radar and MFD"
+    action: press_key
+    parameters: { key: "Tab" }
+    wait_after_ms: 500
+
+  - description: "Cycle to nearest hostile target (T)"
+    action: press_key
+    parameters: { key: "T" }
+    wait_after_ms: 300
+
+  - description: "Lock target (hold T or press 3)"
+    action: hold_key
+    parameters: { key: "T", duration: 0.8 }
+    wait_after_ms: 500
+
+  # --- Weapons Hot ---
+  - description: "Ensure weapons are armed"
+    action: press_key
+    parameters: { key: "P" }
+    wait_after_ms: 200
+
+  - description: "Select weapon group 1 (primary ballistics/energy)"
+    action: press_key
+    parameters: { key: "1" }
+    wait_after_ms: 200
+
+  - description: "Divert power to weapons"
+    action: press_key
+    parameters: { key: "Numpad8" }
+    wait_after_ms: 300
+
+  # --- Engagement ---
+  - description: "Close to optimal engagement range (~800m)"
+    action: wait
+    parameters: { duration: 3.0 }
+    wait_after_ms: 0
+
+  - description: "Lead target pip and open fire (left mouse button)"
+    action: mouse_click
+    parameters: { button: "left" }
+    wait_after_ms: 0
+
+  - description: "Fire missiles when lock tone achieved (middle mouse)"
+    action: mouse_click
+    parameters: { button: "middle" }
+    wait_after_ms: 1000
+
+  # --- Defensive ---
+  - description: "Deploy countermeasures — chaff (H)"
+    action: press_key
+    parameters: { key: "H" }
+    wait_after_ms: 500
+
+  - description: "Deploy countermeasures — flares (J)"
+    action: press_key
+    parameters: { key: "J" }
+    wait_after_ms: 500
+
+  - description: "Boost shields to front during head-on (Numpad2)"
+    action: press_key
+    parameters: { key: "Numpad2" }
+    wait_after_ms: 300
+
+  # --- Disengage ---
+  - description: "If shields critical, boost away (afterburner: Left Shift)"
+    action: hold_key
+    parameters: { key: "LeftShift", duration: 2.0 }
+    wait_after_ms: 0
+
+  - description: "Rebalance power to shields"
+    action: press_key
+    parameters: { key: "Numpad5" }
+    wait_after_ms: 500
+
+  - description: "Assess damage — check ship status MFD"
+    action: press_key
+    parameters: { key: "F4" }
+    wait_after_ms: 500

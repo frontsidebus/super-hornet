@@ -1,13 +1,13 @@
-"""Aviation text preprocessor for TTS output.
+"""Star Citizen text preprocessor for TTS output.
 
-Converts LLM output into clean, speakable text following ICAO phraseology
-conventions. Handles flight levels, headings, frequencies, runway designators,
-squawk codes, speeds, altimeter settings, distances, and general markdown cleanup.
+Converts LLM output into clean, speakable text for Star Citizen contexts.
+Handles SC-specific acronyms, currency (aUEC/UEC), distances, shield/fuel
+percentages, and general markdown cleanup.
 
 Usage:
     from orchestrator.tts_preprocessor import preprocess_for_tts
 
-    clean = preprocess_for_tts("Descend to FL350 and contact tower on 118.30")
+    clean = preprocess_for_tts("Shield at 45%, 2300 aUEC bounty, target 3.5km out")
 """
 
 from __future__ import annotations
@@ -17,19 +17,6 @@ import re
 # ---------------------------------------------------------------------------
 # Digit-to-word mappings
 # ---------------------------------------------------------------------------
-
-_DIGIT_WORDS: dict[str, str] = {
-    "0": "zero",
-    "1": "one",
-    "2": "two",
-    "3": "tree",
-    "4": "four",
-    "5": "fife",
-    "6": "six",
-    "7": "seven",
-    "8": "eight",
-    "9": "niner",
-}
 
 _DIGIT_WORDS_PLAIN: dict[str, str] = {
     "0": "zero",
@@ -44,7 +31,7 @@ _DIGIT_WORDS_PLAIN: dict[str, str] = {
     "9": "nine",
 }
 
-# Standard English number words for natural readback (speeds, altitudes).
+# Standard English number words for natural readback.
 _ONES = [
     "", "one", "two", "three", "four", "five",
     "six", "seven", "eight", "nine", "ten",
@@ -58,46 +45,28 @@ _TENS = [
 
 _MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
 
-# Runway suffix mapping
-_RWY_SUFFIX: dict[str, str] = {
-    "L": " left",
-    "R": " right",
-    "C": " center",
-}
+# ---------------------------------------------------------------------------
+# Star Citizen acronyms that TTS engines mangle if not expanded.
+# ---------------------------------------------------------------------------
 
-# Aviation acronyms that TTS engines mangle if not expanded.
-# Map uppercase acronym → spaced-out letters or spoken form.
-_AVIATION_ACRONYMS: dict[str, str] = {
-    "NOTAM": "NOTAM",  # already a pronounceable word
-    "SIGMET": "SIGMET",  # already pronounceable
-    "PIREP": "pilot report",
-    "ATIS": "ATIS",  # already pronounceable
-    "UNICOM": "UNICOM",  # already pronounceable
-    "CTAF": "C TAF",
-    "IFR": "I F R",
-    "VFR": "V F R",
-    "AGL": "A G L",
-    "MSL": "M S L",
-    "RNAV": "R NAV",
-    "TCAS": "T CAS",
-    "GPWS": "G P W S",
-    "EGPWS": "E G P W S",
-    "ELT": "E L T",
-    "NDB": "N D B",
-    "VOR": "V O R",
-    "ILS": "I L S",
-    "GPS": "G P S",
-    "FMS": "F M S",
-    "CDU": "C D U",
-    "MDA": "M D A",
-    "DH": "D H",
-    "DA": "D A",
-    "MEA": "M E A",
-    "MOCA": "M O C A",
-    "SID": "SID",  # pronounceable
-    "STAR": "STAR",  # pronounceable
-    "METAR": "METAR",  # pronounceable
-    "TAF": "TAF",  # pronounceable
+_SC_ACRONYMS: dict[str, str] = {
+    "SCM": "S C M",
+    "QT": "quantum travel",
+    "aUEC": "alpha U E C",
+    "UEC": "U E C",
+    "SCU": "S C U",
+    "EMP": "E M P",
+    "HUD": "H U D",
+    "EVA": "E V A",
+    "NPC": "N P C",
+    "PVP": "P V P",
+    "PVE": "P V E",
+    "DPS": "D P S",
+    "IR": "I R",
+    "EM": "E M",
+    "CS": "crime stat",
+    "QD": "quantum drive",
+    "MFD": "M F D",
 }
 
 
@@ -106,21 +75,15 @@ _AVIATION_ACRONYMS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
-def _digits_to_words(digits: str, *, aviation: bool = True) -> str:
-    """Convert a string of digits to individual spoken words.
-
-    Args:
-        digits: A string of digit characters (e.g. "350").
-        aviation: If True, use ICAO pronunciation (tree, fife, niner).
-    """
-    table = _DIGIT_WORDS if aviation else _DIGIT_WORDS_PLAIN
-    return " ".join(table[d] for d in digits if d in table)
+def _digits_to_words(digits: str) -> str:
+    """Convert a string of digits to individual spoken words."""
+    return " ".join(_DIGIT_WORDS_PLAIN[d] for d in digits if d in _DIGIT_WORDS_PLAIN)
 
 
 def _number_to_words(n: int) -> str:
     """Convert an integer (0-99999) to spoken English words.
 
-    Used for altitudes and speeds where natural number readback is expected.
+    Used for currency amounts, distances, and percentages.
     """
     if n < 0:
         return "minus " + _number_to_words(-n)
@@ -130,15 +93,23 @@ def _number_to_words(n: int) -> str:
     parts: list[str] = []
     remaining = n
 
+    if remaining >= 1_000_000:
+        millions = remaining // 1_000_000
+        parts.append(_number_to_words(millions))
+        parts.append("million")
+        remaining %= 1_000_000
+
     if remaining >= 1000:
         thousands = remaining // 1000
+        if thousands >= 100:
+            parts.append(_ONES[thousands // 100])
+            parts.append("hundred")
+            thousands %= 100
         if thousands >= 20:
             parts.append(_TENS[thousands // 10])
             if thousands % 10:
                 parts.append(_ONES[thousands % 10])
-        elif thousands >= 10:
-            parts.append(_ONES[thousands])
-        else:
+        elif thousands >= 1:
             parts.append(_ONES[thousands])
         parts.append("thousand")
         remaining %= 1000
@@ -159,208 +130,127 @@ def _number_to_words(n: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Aviation-specific transformers
+# Star Citizen-specific transformers
 # ---------------------------------------------------------------------------
 
 
-def _expand_flight_level(text: str) -> str:
-    """FL350 → flight level tree fife zero."""
+def _expand_sc_acronyms(text: str) -> str:
+    """Expand Star Citizen acronyms that TTS engines mispronounce.
 
-    def _repl(m: re.Match[str]) -> str:
-        digits = m.group(1)
-        return "flight level " + _digits_to_words(digits)
-
-    return re.sub(r"\bFL\s*(\d{2,3})\b", _repl, text)
-
-
-def _expand_altitude(text: str) -> str:
-    """3500ft or 3,500 feet → three thousand five hundred feet."""
-
-    def _repl(m: re.Match[str]) -> str:
-        raw = m.group(1).replace(",", "")
-        n = int(raw)
-        unit = m.group(2).strip().lower()
-        spoken_unit = "feet" if unit in ("ft", "feet") else unit
-        return _number_to_words(n) + " " + spoken_unit
-
-    return re.sub(
-        r"\b(\d{1,3}(?:,?\d{3})?)\s*(ft|feet)\b",
-        _repl,
-        text,
-        flags=re.IGNORECASE,
-    )
-
-
-def _expand_heading(text: str) -> str:
-    """HDG 270 or heading 090 → heading two seven zero."""
-
-    def _repl(m: re.Match[str]) -> str:
-        digits = m.group(1)
-        return "heading " + _digits_to_words(digits)
-
-    return re.sub(
-        r"\b(?:HDG|heading)\s+(\d{3})\b",
-        _repl,
-        text,
-        flags=re.IGNORECASE,
-    )
-
-
-def _expand_frequency(text: str) -> str:
-    """Expand radio frequencies read digit-by-digit with 'point'.
-
-    Matches patterns like 121.7, 118.30 when preceded by frequency-context
-    words or standing alone in a likely frequency range (108-137 MHz comm/nav).
-    """
-
-    def _repl(m: re.Match[str]) -> str:
-        prefix = m.group(1) or ""
-        integer_part = m.group(2)
-        decimal_part = m.group(3)
-        spoken = (
-            _digits_to_words(integer_part)
-            + " point "
-            + _digits_to_words(decimal_part)
-        )
-        if prefix:
-            return prefix + spoken
-        return spoken
-
-    # Context-triggered: preceded by frequency-related words
-    text = re.sub(
-        r"\b((?:on|frequency|freq|contact|monitor|tune|tower|ground|approach|"
-        r"departure|center|unicom|CTAF|ATIS|clearance)\s+)"
-        r"(\d{2,3})\.(\d{1,3})\b",
-        _repl,
-        text,
-        flags=re.IGNORECASE,
-    )
-    return text
-
-
-def _expand_runway(text: str) -> str:
-    """RWY 27L → runway two seven left."""
-
-    def _repl(m: re.Match[str]) -> str:
-        digits = m.group(1)
-        suffix = m.group(2).upper() if m.group(2) else ""
-        spoken = "runway " + _digits_to_words(digits)
-        if suffix in _RWY_SUFFIX:
-            spoken += _RWY_SUFFIX[suffix]
-        return spoken
-
-    return re.sub(
-        r"\b(?:RWY|runway)\s*(\d{2})([LRC])?\b",
-        _repl,
-        text,
-        flags=re.IGNORECASE,
-    )
-
-
-def _expand_squawk(text: str) -> str:
-    """squawk 7700 → squawk seven seven zero zero."""
-
-    def _repl(m: re.Match[str]) -> str:
-        digits = m.group(1)
-        return "squawk " + _digits_to_words(digits)
-
-    return re.sub(
-        r"\bsquawk\s+(\d{4})\b",
-        _repl,
-        text,
-        flags=re.IGNORECASE,
-    )
-
-
-def _expand_speed(text: str) -> str:
-    """250kt → two hundred fifty knots; V1/Vr/V2 → spoken form."""
-    # V-speeds first (before general number handling)
-    text = re.sub(r"\bV1\b", "V one", text)
-    text = re.sub(r"\bVr\b", "V R", text)
-    text = re.sub(r"\bV2\b", "V two", text)
-
-    def _repl(m: re.Match[str]) -> str:
-        raw = m.group(1).replace(",", "")
-        n = int(raw)
-        unit = m.group(2).strip().lower()
-        spoken_unit = "knots" if unit in ("kt", "kts", "knots", "knot") else unit
-        return _number_to_words(n) + " " + spoken_unit
-
-    text = re.sub(
-        r"\b(\d{1,3}(?:,\d{3})?)\s*(kt|kts|knots?)\b",
-        _repl,
-        text,
-        flags=re.IGNORECASE,
-    )
-    return text
-
-
-def _expand_qnh(text: str) -> str:
-    """QNH 1013 → Q N H one zero one tree; 29.92 inHg → two niner niner two inches."""
-
-    def _repl_qnh(m: re.Match[str]) -> str:
-        digits = m.group(1)
-        return "Q N H " + _digits_to_words(digits)
-
-    text = re.sub(r"\bQNH\s+(\d{4})\b", _repl_qnh, text, flags=re.IGNORECASE)
-
-    def _repl_inhg(m: re.Match[str]) -> str:
-        integer_part = m.group(1)
-        decimal_part = m.group(2)
-        return _digits_to_words(integer_part + decimal_part) + " inches"
-
-    text = re.sub(
-        r"\b(\d{2})\.(\d{2})\s*inHg\b",
-        _repl_inhg,
-        text,
-        flags=re.IGNORECASE,
-    )
-    return text
-
-
-def _expand_aviation_acronyms(text: str) -> str:
-    """Expand aviation acronyms that TTS engines mispronounce.
-
-    Only expands standalone uppercase acronyms (word boundaries) to avoid
+    Only expands standalone acronyms (word boundaries) to avoid
     mangling words that happen to contain the same letters.
+    Processes longer acronyms first to avoid partial matches
+    (e.g. 'aUEC' before 'UEC').
     """
-    for acronym, spoken in _AVIATION_ACRONYMS.items():
+    # Sort by length descending so 'aUEC' is matched before 'UEC'
+    for acronym, spoken in sorted(
+        _SC_ACRONYMS.items(), key=lambda kv: len(kv[0]), reverse=True
+    ):
         if acronym != spoken:
-            text = re.sub(rf"\b{acronym}\b", spoken, text)
+            text = re.sub(rf"\b{re.escape(acronym)}\b", spoken, text)
     return text
 
 
-def _expand_distance(text: str) -> str:
-    """5nm → five nautical miles; DME 12.3 → D M E one two point tree."""
-    # NM / nm distances
-    def _repl_nm(m: re.Match[str]) -> str:
-        raw = m.group(1)
+def _expand_sc_currency(text: str) -> str:
+    """Expand aUEC/UEC currency amounts into natural speech.
+
+    Amounts under 1000 are read digit-by-digit for clarity (e.g. "250 aUEC"
+    → "two five zero alpha U E C"). Amounts 1000+ are read naturally
+    (e.g. "15000 aUEC" → "fifteen thousand alpha U E C").
+    """
+
+    def _repl(m: re.Match[str]) -> str:
+        raw = m.group(1).replace(",", "")
         n = int(raw)
-        suffix = "nautical mile" if n == 1 else "nautical miles"
-        return _number_to_words(n) + " " + suffix
+        currency = m.group(2)
+        spoken_currency = "alpha U E C" if currency.lower() == "auec" else "U E C"
 
-    text = re.sub(r"\b(\d+)\s*(?:NM|nm)\b", _repl_nm, text)
+        if n < 1000:
+            spoken_amount = _digits_to_words(raw.lstrip("0") or "0")
+        else:
+            spoken_amount = _number_to_words(n)
 
-    # DME readings
-    def _repl_dme(m: re.Match[str]) -> str:
-        integer_part = m.group(1)
-        decimal_part = m.group(2)
-        spoken = "D M E " + _digits_to_words(integer_part)
-        if decimal_part:
-            spoken += " point " + _digits_to_words(decimal_part)
-        return spoken
+        return spoken_amount + " " + spoken_currency
 
-    text = re.sub(
-        r"\bDME\s+(\d+)(?:\.(\d+))?\b",
-        _repl_dme,
+    return re.sub(
+        r"\b(\d{1,3}(?:,?\d{3})*)\s*(aUEC|UEC)\b",
+        _repl,
         text,
         flags=re.IGNORECASE,
     )
+
+
+def _expand_sc_distances(text: str) -> str:
+    """Expand km/m distances into natural speech.
+
+    Examples:
+        3.5km → three point five kilometers
+        800m → eight hundred meters
+        12km → twelve kilometers
+    """
+
+    def _repl_km(m: re.Match[str]) -> str:
+        integer_part = m.group(1).replace(",", "")
+        decimal_part = m.group(2)
+        n = int(integer_part)
+        unit = "kilometer" if n == 1 and not decimal_part else "kilometers"
+
+        if decimal_part:
+            spoken = _number_to_words(n) + " point " + _digits_to_words(decimal_part)
+        else:
+            spoken = _number_to_words(n)
+
+        return spoken + " " + unit
+
+    text = re.sub(
+        r"\b(\d{1,6}(?:,\d{3})*)(?:\.(\d+))?\s*km\b",
+        _repl_km,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    def _repl_m(m: re.Match[str]) -> str:
+        raw = m.group(1).replace(",", "")
+        n = int(raw)
+        unit = "meter" if n == 1 else "meters"
+        return _number_to_words(n) + " " + unit
+
+    text = re.sub(
+        r"\b(\d{1,6}(?:,\d{3})*)\s*m\b",
+        _repl_m,
+        text,
+    )
+
     return text
 
 
+def _expand_sc_percentages(text: str) -> str:
+    """Expand shield/fuel/hull percentages into natural speech.
+
+    Examples:
+        45% → forty five percent
+        100% shields → one hundred percent shields
+        0% → zero percent
+    """
+
+    def _repl(m: re.Match[str]) -> str:
+        n = int(m.group(1))
+        suffix = m.group(2) or ""
+        spoken = _number_to_words(n) + " percent"
+        if suffix:
+            spoken += " " + suffix.strip()
+        return spoken
+
+    return re.sub(
+        r"\b(\d{1,3})%(\s+(?:shield|shields|hull|fuel|hydrogen|quantum|power|health))?",
+        _repl,
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
 # ---------------------------------------------------------------------------
-# Markdown and general cleanup (ported from server.py _sanitize_for_tts)
+# Markdown and general cleanup
 # ---------------------------------------------------------------------------
 
 
@@ -422,7 +312,7 @@ def _replace_special_chars(text: str) -> str:
     text = text.replace("|", ", ")
     text = text.replace("~", "approximately ")
 
-    # Slash: preserve in frequencies like 121.7/118.3, expand otherwise
+    # Slash: preserve in numeric contexts like 3/4, expand otherwise
     text = re.sub(r"(\d)\s*/\s*(\d)", r"\1 slash \2", text)
     text = re.sub(r"(?<!\d)/(?!\d)", " ", text)
 
@@ -446,14 +336,13 @@ def _clean_whitespace(text: str) -> str:
 def preprocess_for_tts(text: str) -> str:
     """Convert LLM output into clean, speakable text for TTS engines.
 
-    Applies aviation-specific transformations (flight levels, headings,
-    frequencies, runway designators, squawk codes, speeds, altimeter
-    settings, distances) followed by markdown stripping and whitespace
+    Applies Star Citizen-specific transformations (currency, distances,
+    percentages, acronyms) followed by markdown stripping and whitespace
     cleanup.
 
     Args:
         text: Raw text from the LLM, possibly containing markdown and
-              aviation shorthand.
+              Star Citizen terminology.
 
     Returns:
         Plain speakable text suitable for ElevenLabs or similar TTS.
@@ -461,28 +350,15 @@ def preprocess_for_tts(text: str) -> str:
     if not text:
         return ""
 
-    # --- Aviation transformations (order matters) ---
-    # Flight levels before general altitude (FL350 vs 3500ft)
-    text = _expand_flight_level(text)
-    # Headings before general number handling
-    text = _expand_heading(text)
-    # Squawk before general digit handling
-    text = _expand_squawk(text)
-    # QNH / altimeter before general number handling
-    text = _expand_qnh(text)
-    # Frequencies (context-sensitive)
-    text = _expand_frequency(text)
-    # DME / distance before stripping NM
-    text = _expand_distance(text)
-    # Runway designators
-    text = _expand_runway(text)
-    # Speeds (including V-speeds)
-    text = _expand_speed(text)
-    # Altitudes (3500ft, 3,500 feet)
-    text = _expand_altitude(text)
-
-    # Aviation acronyms (after specific patterns to avoid interfering)
-    text = _expand_aviation_acronyms(text)
+    # --- Star Citizen transformations (order matters) ---
+    # Currency before acronyms (so "aUEC" in "2300 aUEC" is handled as currency)
+    text = _expand_sc_currency(text)
+    # Distances before general cleanup
+    text = _expand_sc_distances(text)
+    # Percentages (shield, fuel, hull, etc.)
+    text = _expand_sc_percentages(text)
+    # SC acronyms (after specific patterns to avoid interfering)
+    text = _expand_sc_acronyms(text)
 
     # --- General cleanup ---
     text = _strip_markdown(text)

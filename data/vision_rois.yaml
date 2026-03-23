@@ -1,0 +1,237 @@
+# =============================================================================
+# Star Citizen HUD -- Region of Interest (ROI) Definitions
+# =============================================================================
+#
+# IMPORTANT: All coordinates below are PLACEHOLDERS.  They were estimated from
+# default Star Citizen HUD layouts and will need calibration against the live
+# game at each resolution.  Use the calibration tool or manually adjust after
+# taking reference screenshots.
+#
+# active_activities values correspond to GameActivity enum members:
+#   IDLE, ON_FOOT, SHIP_IDLE, SHIP_FLIGHT, QUANTUM_TRAVEL, COMBAT,
+#   MINING, SALVAGE, TRADING, LANDING, EVA, ENGINEERING
+#
+# An empty active_activities list means the ROI is checked for ALL activities.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 1920 x 1080
+# ---------------------------------------------------------------------------
+rois:
+  # -- Shield display (centre-bottom HUD arc) --------------------------------
+  - name: shield_display
+    x: 835
+    y: 880
+    width: 250
+    height: 150
+    description: "Shield health quadrants and overall shield percentage"
+    active_activities:
+      - SHIP_FLIGHT
+      - COMBAT
+      - LANDING
+
+  # -- Radar / scanner (centre-bottom circle) --------------------------------
+  - name: radar
+    x: 860
+    y: 740
+    width: 200
+    height: 200
+    description: "3-D radar sphere showing nearby contacts"
+    active_activities:
+      - SHIP_FLIGHT
+      - COMBAT
+      - QUANTUM_TRAVEL
+      - LANDING
+
+  # -- Quantum drive status (centre HUD overlay) -----------------------------
+  - name: quantum_drive_status
+    x: 810
+    y: 400
+    width: 300
+    height: 80
+    description: "QD spool / calibration progress and destination info"
+    active_activities:
+      - QUANTUM_TRAVEL
+      - SHIP_FLIGHT
+
+  # -- Fuel gauges (bottom-left of HUD) --------------------------------------
+  - name: fuel_gauges
+    x: 50
+    y: 950
+    width: 200
+    height: 100
+    description: "Hydrogen and quantum fuel levels"
+    active_activities:
+      - SHIP_FLIGHT
+      - QUANTUM_TRAVEL
+      - COMBAT
+      - LANDING
+
+  # -- Speed indicator (bottom-centre) ----------------------------------------
+  - name: speed_indicator
+    x: 900
+    y: 1000
+    width: 120
+    height: 60
+    description: "Current velocity and SCM/cruise mode indicator"
+    active_activities:
+      - SHIP_FLIGHT
+      - COMBAT
+      - QUANTUM_TRAVEL
+      - LANDING
+
+  # -- Weapon status (bottom-right weapon group display) ----------------------
+  - name: weapon_status
+    x: 1600
+    y: 920
+    width: 280
+    height: 140
+    description: "Weapon groups, ammo counts, and overheat indicators"
+    active_activities:
+      - COMBAT
+      - SHIP_FLIGHT
+
+  # -- Target info (top-right target lock box) --------------------------------
+  - name: target_info
+    x: 1550
+    y: 50
+    width: 340
+    height: 200
+    description: "Locked target name, distance, hull %, and signature"
+    active_activities:
+      - COMBAT
+
+  # -- Minimap / starmap overlay (top-left) -----------------------------------
+  - name: minimap
+    x: 30
+    y: 30
+    width: 300
+    height: 300
+    description: "Minimap or starmap inset showing waypoints and QT markers"
+    active_activities: []  # relevant in all activities
+
+  # -- Chat log (bottom-left text area) ---------------------------------------
+  - name: chat_log
+    x: 30
+    y: 750
+    width: 400
+    height: 180
+    description: "Global / local / party chat messages"
+    active_activities: []  # relevant in all activities
+
+  # -- Notification area (top-centre) -----------------------------------------
+  - name: notification_area
+    x: 660
+    y: 10
+    width: 600
+    height: 80
+    description: "Mission updates, party invites, and system notifications"
+    active_activities: []  # relevant in all activities
+
+
+# ---------------------------------------------------------------------------
+# 2560 x 1440  (placeholder — scaled from 1080p estimates)
+# ---------------------------------------------------------------------------
+# NOTE: These are rough 1.333x scales of the 1080p values.  Star Citizen
+# does not linearly scale its HUD, so these WILL need manual adjustment.
+
+rois_2560x1440:
+  - name: shield_display
+    x: 1113
+    y: 1173
+    width: 334
+    height: 200
+    description: "Shield health quadrants and overall shield percentage"
+    active_activities:
+      - SHIP_FLIGHT
+      - COMBAT
+      - LANDING
+
+  - name: radar
+    x: 1147
+    y: 987
+    width: 266
+    height: 266
+    description: "3-D radar sphere showing nearby contacts"
+    active_activities:
+      - SHIP_FLIGHT
+      - COMBAT
+      - QUANTUM_TRAVEL
+      - LANDING
+
+  - name: quantum_drive_status
+    x: 1080
+    y: 533
+    width: 400
+    height: 107
+    description: "QD spool / calibration progress and destination info"
+    active_activities:
+      - QUANTUM_TRAVEL
+      - SHIP_FLIGHT
+
+  - name: fuel_gauges
+    x: 67
+    y: 1267
+    width: 266
+    height: 133
+    description: "Hydrogen and quantum fuel levels"
+    active_activities:
+      - SHIP_FLIGHT
+      - QUANTUM_TRAVEL
+      - COMBAT
+      - LANDING
+
+  - name: speed_indicator
+    x: 1200
+    y: 1333
+    width: 160
+    height: 80
+    description: "Current velocity and SCM/cruise mode indicator"
+    active_activities:
+      - SHIP_FLIGHT
+      - COMBAT
+      - QUANTUM_TRAVEL
+      - LANDING
+
+  - name: weapon_status
+    x: 2133
+    y: 1227
+    width: 374
+    height: 187
+    description: "Weapon groups, ammo counts, and overheat indicators"
+    active_activities:
+      - COMBAT
+      - SHIP_FLIGHT
+
+  - name: target_info
+    x: 2067
+    y: 67
+    width: 454
+    height: 266
+    description: "Locked target name, distance, hull %, and signature"
+    active_activities:
+      - COMBAT
+
+  - name: minimap
+    x: 40
+    y: 40
+    width: 400
+    height: 400
+    description: "Minimap or starmap inset showing waypoints and QT markers"
+    active_activities: []
+
+  - name: chat_log
+    x: 40
+    y: 1000
+    width: 534
+    height: 240
+    description: "Global / local / party chat messages"
+    active_activities: []
+
+  - name: notification_area
+    x: 880
+    y: 13
+    width: 800
+    height: 107
+    description: "Mission updates, party invites, and system notifications"
+    active_activities: []

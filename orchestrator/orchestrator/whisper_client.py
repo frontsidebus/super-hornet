@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 import httpx
 
-from .audio_processing import AVIATION_PROMPT
+from .audio_processing import SC_VOCABULARY_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class WhisperClient:
         self.timeout = timeout
         self.model = model
         self.language = language
-        self.initial_prompt = initial_prompt or AVIATION_PROMPT
+        self.initial_prompt = initial_prompt or SC_VOCABULARY_PROMPT
         self._client = httpx.Client(timeout=self.timeout)
 
     # -- Internal helpers -----------------------------------------------------

@@ -1,4 +1,4 @@
-"""Wrapper around the Anthropic API with MERLIN persona and tool definitions."""
+"""Wrapper around the Anthropic API with Super Hornet persona and tool definitions."""
 
 from __future__ import annotations
 
@@ -12,43 +12,40 @@ from typing import Any
 import anthropic
 
 from .context_store import ContextStore
-from .sim_client import FlightPhase, SimConnectClient, SimState
+from .game_state import GameActivity, GameState
 from .tools import (
-    create_flight_plan,
-    get_checklist,
-    get_sim_state,
-    lookup_airport,
-    search_manual,
+    get_game_state,
+    get_procedure,
+    get_ship_status,
+    get_skill,
+    lookup_commodity,
+    plan_trade_route,
+    search_knowledge,
 )
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# MERLIN persona — prefer the rich markdown version from disk when available.
+# Super Hornet persona — prefer the rich markdown version from disk.
 # ---------------------------------------------------------------------------
 
-_MERLIN_SYSTEM_PATH = Path(__file__).resolve().parents[2] / "data" / "prompts" / "merlin_system.md"
+_HORNET_SYSTEM_PATH = (
+    Path(__file__).resolve().parents[2] / "data" / "prompts" / "hornet_system.md"
+)
 
 _INLINE_PERSONA = """\
-You are MERLIN, an AI co-pilot assistant for Microsoft Flight Simulator 2024. Your persona:
+You are Super Hornet, an advanced AI wingman and operations officer for Star Citizen. You are \
+the pilot's co-pilot, navigator, tactical advisor, and ship systems specialist.
 
-- **Background**: Former Navy Test Pilot School graduate turned digital co-pilot. You carry \
-the precision and discipline of military aviation with the adaptability of a seasoned instructor.
-- **Tone**: Professional but approachable. Dry, understated humor — the kind you'd hear in a \
-ready room. Never flippant about safety.
-- **Address**: Always call the pilot "Captain." You respect the chain of command — they fly, \
-you advise.
-- **Communication style**: Clear, concise, and structured like radio calls when time-critical. \
-More conversational during low-workload phases. Use aviation terminology naturally but explain \
-it when a Captain seems unsure.
-- **Philosophy**: "Aviate, Navigate, Communicate" — always prioritize in that order. Never \
-distract the Captain during critical phases unless safety demands it.
-- **Knowledge**: Deep expertise in aerodynamics, navigation, weather, aircraft systems, ATC \
-procedures, regulations, and emergency procedures. You know the POH for common aircraft types.
-- **Limitations**: You always remind the Captain that you're a simulator assistant, not a \
-replacement for real flight training or certified flight instructors.
+- **Address**: Always call the pilot "Commander" or by their callsign.
+- **Tone**: Professional but not stiff. Veteran military advisor with dry humor.
+- **Combat**: Terse, tactical, callout-style. No filler, no jokes.
+- **Cruise/QT**: Conversational, good for planning and briefing.
+- **Knowledge**: Deep expertise in all Star Citizen ships, systems, trading, mining, combat, \
+navigation, and game mechanics.
+- **Limitations**: State clearly when uncertain about game state. Never hallucinate telemetry.
 
-Current flight context will be injected below. Use it to make your responses situationally aware.
+Current game context will be injected below. Use it to make your responses situationally aware.
 """
 
 # ---------------------------------------------------------------------------
@@ -58,49 +55,64 @@ Current flight context will be injected below. Use it to make your responses sit
 _RESPONSE_PACING = """\
 
 --- RESPONSE RULES ---
-Keep responses concise and tactical. In a cockpit, brevity saves lives.
-- Use standard aviation phraseology wherever appropriate.
-- Pause after key information to allow the pilot to acknowledge.
+Keep responses concise and tactical. In the verse, brevity keeps you alive.
 - For routine comms, acknowledgments, and simple questions: 1-3 sentences MAX.
 - For procedures and checklists: present items in groups of 3-5, then wait.
-- For briefings and flight plans: be thorough but structured — use bullet points, not prose.
+- For briefings and trade plans: be thorough but structured — use bullet points, not prose.
 - NEVER ramble. If you catch yourself writing a paragraph, stop and restructure.
 - After asking a question, STOP. Do not answer your own question.
-- After giving a key callout, STOP. Let the Captain respond.
-- End radio-style exchanges with "over" or a clear pause point.
+- After giving a key callout, STOP. Let the Commander respond.
+- Use Star Citizen terminology naturally (QT, SCM, aUEC, MobiGlas, etc.).
 """
 
 # ---------------------------------------------------------------------------
-# Flight-phase-specific response style directives.
+# Activity-specific response style directives.
 # ---------------------------------------------------------------------------
 
-_PHASE_STYLE: dict[FlightPhase, str] = {
-    FlightPhase.PREFLIGHT: (
-        "Phase: PREFLIGHT. Relaxed tone, moderate length. Good time for banter and briefings."
+_ACTIVITY_STYLE: dict[GameActivity, str] = {
+    GameActivity.IDLE: (
+        "Activity: IDLE. Relaxed tone, moderate length. Good time for banter, "
+        "loadout discussion, and planning."
     ),
-    FlightPhase.TAXI: (
-        "Phase: TAXI. Professional, concise. 1-2 sentences unless reading a checklist."
+    GameActivity.ON_FOOT: (
+        "Activity: ON FOOT. Moderate length. Can discuss missions, locations, gear."
     ),
-    FlightPhase.TAKEOFF: (
-        "Phase: TAKEOFF. ULTRA-BRIEF. Callouts only. No humor. No filler."
+    GameActivity.SHIP_IDLE: (
+        "Activity: SHIP IDLE. Professional, moderate. Good time for pre-flight and systems check."
     ),
-    FlightPhase.CLIMB: (
-        "Phase: CLIMB. Professional, moderate length. Light humor once established."
+    GameActivity.SHIP_FLIGHT: (
+        "Activity: SHIP FLIGHT. Professional, concise. 1-2 sentences unless briefing."
     ),
-    FlightPhase.CRUISE: (
-        "Phase: CRUISE. Conversational, can be more detailed. Good time to teach."
+    GameActivity.QUANTUM_TRAVEL: (
+        "Activity: QUANTUM TRAVEL. Conversational, can be more detailed. "
+        "Good time to plan, brief, or discuss strategy."
     ),
-    FlightPhase.DESCENT: (
-        "Phase: DESCENT. Briefing mode. Structured and clear. Minimal humor."
+    GameActivity.COMBAT: (
+        "Activity: COMBAT. ULTRA-BRIEF. Tactical callouts only. No humor. No filler. "
+        "Lead with the most critical information."
     ),
-    FlightPhase.APPROACH: (
-        "Phase: APPROACH. ULTRA-BRIEF. Concise callouts only. No humor. No filler."
+    GameActivity.MINING: (
+        "Activity: MINING. Technical and precise. Focus on rock composition, "
+        "laser power, and extraction efficiency."
     ),
-    FlightPhase.LANDING: (
-        "Phase: LANDING. ULTRA-BRIEF. Callouts only. Crisp and precise."
+    GameActivity.SALVAGE: (
+        "Activity: SALVAGE. Technical, moderate. Focus on component identification "
+        "and extraction technique."
     ),
-    FlightPhase.LANDED: (
-        "Phase: LANDED. Relaxed debrief mode. Can use humor. Moderate length."
+    GameActivity.TRADING: (
+        "Activity: TRADING. Analytical. Focus on commodity prices, margins, "
+        "and route optimization."
+    ),
+    GameActivity.LANDING: (
+        "Activity: LANDING. Concise callouts. Landing pad identification, "
+        "speed, approach guidance."
+    ),
+    GameActivity.EVA: (
+        "Activity: EVA. Moderate length. Focus on orientation and objective."
+    ),
+    GameActivity.ENGINEERING: (
+        "Activity: ENGINEERING. Technical, moderate. Focus on power distribution, "
+        "component health, and repair priorities."
     ),
 }
 
@@ -111,47 +123,46 @@ _PHASE_STYLE: dict[FlightPhase, str] = {
 STOP_SEQUENCES: list[str] = ["\nover.", "\nOver.", "\nover", "\nOver"]
 
 
-def _load_merlin_persona() -> str:
-    """Return the full MERLIN system prompt, preferring the on-disk markdown file."""
-    if _MERLIN_SYSTEM_PATH.exists():
+def _load_hornet_persona() -> str:
+    """Return the full Super Hornet system prompt, preferring on-disk markdown."""
+    if _HORNET_SYSTEM_PATH.exists():
         try:
-            return _MERLIN_SYSTEM_PATH.read_text(encoding="utf-8")
+            return _HORNET_SYSTEM_PATH.read_text(encoding="utf-8")
         except Exception:
             logger.warning(
                 "Failed to read %s; falling back to inline persona",
-                _MERLIN_SYSTEM_PATH,
+                _HORNET_SYSTEM_PATH,
             )
     return _INLINE_PERSONA
 
 
-MERLIN_PERSONA: str = _load_merlin_persona()
+HORNET_PERSONA: str = _load_hornet_persona()
 
 # ---------------------------------------------------------------------------
 # Query classification for response budgeting.
 # ---------------------------------------------------------------------------
 
-# Patterns that indicate the pilot wants a detailed response.
 _BRIEFING_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"\b(brief|briefing|checklist|flight\s*plan|plan\s+a\s+flight)\b", re.I),
-    re.compile(r"\b(walk\s+me\s+through|explain|teach|how\s+does)\b", re.I),
-    re.compile(r"\b(create|build|make)\s+(a\s+)?(flight\s*plan|route)\b", re.I),
+    re.compile(r"\b(plan|route|trade\s*route|loadout|build|guide)\b", re.I),
+    re.compile(r"\b(walk\s+me\s+through|explain|teach|how\s+does|how\s+do\s+I)\b", re.I),
+    re.compile(r"\b(create|build|make)\s+(a\s+)?(trade\s*route|route|plan|loadout)\b", re.I),
+    re.compile(r"\b(brief|briefing|checklist|procedure)\b", re.I),
 ]
 
-# Patterns that indicate a short acknowledgment is expected.
 _SHORT_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"^(roger|copy|wilco|affirm|negative|check|say again)\b", re.I),
-    re.compile(r"^(thanks|thank you|got it|ok|okay)\b", re.I),
-    re.compile(r"\b(what\s*'?s?\s+(my|our|the)\s+(altitude|heading|speed|fuel))\b", re.I),
-    re.compile(r"\b(how\s+(much|far|long|high|fast))\b", re.I),
-    re.compile(r"^(yes|no|yep|nope|yeah)\b", re.I),
+    re.compile(r"^(roger|copy|got it|ok|okay|thanks|thank you)\b", re.I),
+    re.compile(r"^(yes|no|yep|nope|yeah|nah)\b", re.I),
+    re.compile(
+        r"\b(what\s*'?s?\s+(my|our|the)\s+(shields?|fuel|speed|location|crime\s*stat))\b",
+        re.I,
+    ),
+    re.compile(r"\b(how\s+(much|far|long|many))\b", re.I),
+    re.compile(r"\b(where\s+(am\s+I|are\s+we))\b", re.I),
 ]
 
 
 def classify_query(user_message: str) -> str:
-    """Classify a pilot message as 'short', 'briefing', or 'normal'.
-
-    Returns one of: 'short', 'briefing', 'normal'.
-    """
+    """Classify a message as 'short', 'briefing', or 'normal'."""
     text = user_message.strip()
     for pat in _SHORT_PATTERNS:
         if pat.search(text):
@@ -177,10 +188,10 @@ def max_tokens_for_query(
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
-        "name": "get_sim_state",
+        "name": "get_game_state",
         "description": (
-            "Retrieve the current simulator state including position, attitude, speeds, "
-            "engine parameters, autopilot, radios, fuel, weather, and surface states."
+            "Retrieve the current game state including ship status, player location, "
+            "combat state, and recent log events."
         ),
         "input_schema": {
             "type": "object",
@@ -189,30 +200,32 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "lookup_airport",
+        "name": "lookup_commodity",
         "description": (
-            "Look up airport information by ICAO or FAA identifier. Returns name, location, "
-            "elevation, and basic facility data."
+            "Look up commodity prices and availability from the UEX Corp database. "
+            "Can filter by commodity name and/or location."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "identifier": {
+                "commodity": {
                     "type": "string",
-                    "description": (
-                        "Airport ICAO or FAA identifier (e.g., KJFK, KLAX, ORL)"
-                    ),
+                    "description": "Commodity name or code (e.g., 'Laranite', 'Agricium')",
+                },
+                "location": {
+                    "type": "string",
+                    "description": "Optional location filter (e.g., 'Lorville', 'New Babbage')",
+                    "default": "",
                 },
             },
-            "required": ["identifier"],
+            "required": ["commodity"],
         },
     },
     {
-        "name": "search_manual",
+        "name": "search_knowledge",
         "description": (
-            "Search the aircraft operating manual and aviation knowledge base. Use this to "
-            "look up procedures, limitations, V-speeds, systems descriptions, or any "
-            "aircraft-specific information."
+            "Search the Star Citizen knowledge base for ship specs, game mechanics, "
+            "lore, procedures, or any game-related information."
         ),
         "input_schema": {
             "type": "object",
@@ -221,81 +234,117 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "The search query describing what to look up",
                 },
+                "ship_name": {
+                    "type": "string",
+                    "description": "Optional ship name to filter results",
+                    "default": "",
+                },
             },
             "required": ["query"],
         },
     },
     {
-        "name": "get_checklist",
+        "name": "get_ship_status",
         "description": (
-            "Get the appropriate checklist for a given flight phase. Returns phase-specific "
-            "checklist items, preferring aircraft-specific checklists when available."
+            "Get detailed ship status including shields, hull, fuel levels, "
+            "power state, weapons, and quantum drive."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {
-                "phase": {
-                    "type": "string",
-                    "description": (
-                        "Flight phase (PREFLIGHT, TAXI, TAKEOFF, CLIMB, CRUISE, "
-                        "DESCENT, APPROACH, LANDING, LANDED)"
-                    ),
-                },
-            },
-            "required": ["phase"],
+            "properties": {},
+            "required": [],
         },
     },
     {
-        "name": "create_flight_plan",
+        "name": "plan_trade_route",
         "description": (
-            "Create a basic flight plan between two airports. Returns a draft route "
-            "structure with departure, destination, and waypoints."
+            "Plan an optimal trade route between two locations. Returns commodity "
+            "recommendations, expected profit, and route details."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "departure": {
+                "origin": {
                     "type": "string",
-                    "description": "Departure airport identifier",
+                    "description": "Starting location (e.g., 'Lorville', 'Area18')",
                 },
                 "destination": {
                     "type": "string",
-                    "description": "Destination airport identifier",
+                    "description": "Destination location (e.g., 'New Babbage', 'Orison')",
                 },
-                "altitude": {
+                "cargo_scu": {
                     "type": "integer",
-                    "description": "Planned cruise altitude in feet MSL",
-                    "default": 5000,
-                },
-                "route": {
-                    "type": "string",
-                    "description": "Optional route waypoints separated by spaces",
-                    "default": "",
+                    "description": "Available cargo capacity in SCU",
+                    "default": 100,
                 },
             },
-            "required": ["departure", "destination"],
+            "required": ["origin", "destination"],
+        },
+    },
+    {
+        "name": "get_procedure",
+        "description": (
+            "Get the procedure or checklist for a specific game activity. "
+            "Returns step-by-step instructions with keybinds."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "activity": {
+                    "type": "string",
+                    "description": (
+                        "Game activity (SHIP_IDLE, SHIP_FLIGHT, QUANTUM_TRAVEL, COMBAT, "
+                        "MINING, SALVAGE, TRADING, LANDING, ENGINEERING)"
+                    ),
+                },
+            },
+            "required": ["activity"],
+        },
+    },
+    {
+        "name": "get_skill",
+        "description": (
+            "Search the skill library for a learned action sequence. Skills are "
+            "verified keystroke sequences for common operations like quantum travel, "
+            "ship power-up, etc."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What you want to do (e.g., 'quantum travel', 'power on ship')",
+                },
+            },
+            "required": ["query"],
         },
     },
 ]
 
 
 class ClaudeClient:
-    """Manages conversations with Claude using the MERLIN persona."""
+    """Manages conversations with Claude using the Super Hornet persona."""
 
     def __init__(
         self,
         api_key: str,
         model: str,
-        sim_client: SimConnectClient,
+        game_client: Any,
         context_store: ContextStore,
+        skill_library: Any = None,
+        uex_client: Any = None,
+        input_simulator: Any = None,
         max_tokens: int = 1024,
         max_tokens_briefing: int = 2048,
         max_history: int = 20,
     ) -> None:
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
         self._model = model
-        self._sim_client = sim_client
+        self._game_client = game_client
         self._context_store = context_store
+        self._skill_library = skill_library
+        self._uex_client = uex_client
+        self._input_simulator = input_simulator
         self._conversation: list[dict[str, Any]] = []
         self._max_history = max_history
         self._max_tokens = max_tokens
@@ -303,33 +352,33 @@ class ClaudeClient:
 
     def _build_system_prompt(
         self,
-        sim_state: SimState,
+        game_state: GameState,
         context_docs: list[dict[str, Any]],
     ) -> str:
-        parts = [MERLIN_PERSONA]
+        parts = [HORNET_PERSONA]
 
-        # Flight-phase-aware response style
-        phase = sim_state.flight_phase
-        if phase in _PHASE_STYLE:
-            parts.append(f"\n--- CURRENT RESPONSE STYLE ---\n{_PHASE_STYLE[phase]}")
+        # Activity-aware response style
+        activity = game_state.activity
+        if activity in _ACTIVITY_STYLE:
+            parts.append(f"\n--- CURRENT RESPONSE STYLE ---\n{_ACTIVITY_STYLE[activity]}")
 
-        parts.append(f"\n--- CURRENT FLIGHT STATE ---\n{sim_state.telemetry_summary()}")
-        parts.append(f"Aircraft: {sim_state.aircraft or 'Unknown'}")
-        parts.append(f"On ground: {sim_state.on_ground}")
+        # Current game state context
+        parts.append(f"\n--- CURRENT GAME STATE ---\n{game_state.state_summary()}")
 
-        if sim_state.autopilot.master:
-            ap = sim_state.autopilot
-            parts.append(
-                f"Autopilot: HDG {ap.heading:.0f} | ALT {ap.altitude:.0f} | "
-                f"VS {ap.vertical_speed:+.0f} | IAS {ap.airspeed:.0f}"
-            )
+        if game_state.player.in_ship and game_state.ship.name:
+            parts.append(f"Ship: {game_state.ship.name}")
+            if game_state.ship.weapons_armed:
+                parts.append("Weapons: ARMED")
+            if game_state.ship.quantum_drive_active:
+                parts.append("Quantum Drive: ACTIVE")
 
-        env = sim_state.environment
-        parts.append(
-            f"Weather: Wind {env.wind_direction:.0f}\u00b0/{env.wind_speed_kts:.0f}kt | "
-            f"Vis {env.visibility_sm:.0f}sm | Temp {env.temperature_c:.0f}\u00b0C | "
-            f"QNH {env.barometer_inhg:.2f}\"Hg"
-        )
+        if game_state.player.crime_stat > 0:
+            parts.append(f"WARNING: CrimeStat {game_state.player.crime_stat} active")
+
+        if game_state.combat.under_attack:
+            parts.append("ALERT: Under attack!")
+            if game_state.combat.hostile_count > 0:
+                parts.append(f"Hostile contacts: {game_state.combat.hostile_count}")
 
         if context_docs:
             parts.append("\n--- RELEVANT REFERENCE MATERIAL ---")
@@ -337,7 +386,6 @@ class ClaudeClient:
                 source = doc.get("metadata", {}).get("source", "unknown")
                 parts.append(f"[{source}]\n{doc['content'][:500]}")
 
-        # Append response pacing rules last so they take priority
         parts.append(_RESPONSE_PACING)
 
         return "\n".join(parts)
@@ -345,21 +393,21 @@ class ClaudeClient:
     async def chat(
         self,
         user_message: str,
-        sim_state: SimState | None = None,
+        game_state: GameState | None = None,
         image_base64: str | None = None,
     ) -> AsyncIterator[str]:
         """Send a message and yield streamed response text chunks.
 
         Handles tool use loops internally, yielding text as it arrives.
         """
-        if sim_state is None:
+        if game_state is None:
             try:
-                sim_state = await self._sim_client.get_state()
+                game_state = await self._game_client.get_state()
             except Exception:
-                sim_state = SimState()
+                game_state = GameState()
 
-        context_docs = await self._context_store.get_relevant_context(sim_state)
-        system = self._build_system_prompt(sim_state, context_docs)
+        context_docs = await self._context_store.get_relevant_context(game_state)
+        system = self._build_system_prompt(game_state, context_docs)
 
         # Classify the query to set an appropriate token budget
         query_type = classify_query(user_message)
@@ -449,7 +497,7 @@ class ClaudeClient:
             # Execute tools and feed results back
             tool_results: list[dict[str, Any]] = []
             for tb in tool_use_blocks:
-                result = await self._execute_tool(tb["name"], tb["input"], sim_state)
+                result = await self._execute_tool(tb["name"], tb["input"], game_state)
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tb["id"],
@@ -458,33 +506,41 @@ class ClaudeClient:
             self._conversation.append({"role": "user", "content": tool_results})
 
     async def _execute_tool(
-        self, name: str, args: dict[str, Any], sim_state: SimState
+        self, name: str, args: dict[str, Any], game_state: GameState
     ) -> Any:
         logger.info("Executing tool: %s(%s)", name, args)
         try:
-            if name == "get_sim_state":
-                return await get_sim_state(self._sim_client)
-            elif name == "lookup_airport":
-                return await lookup_airport(args["identifier"])
-            elif name == "search_manual":
-                return await search_manual(
+            if name == "get_game_state":
+                return await get_game_state(self._game_client)
+            elif name == "lookup_commodity":
+                return await lookup_commodity(
+                    args["commodity"],
+                    self._uex_client,
+                    location=args.get("location", ""),
+                )
+            elif name == "search_knowledge":
+                return await search_knowledge(
                     args["query"],
                     self._context_store,
-                    aircraft_type=sim_state.aircraft,
+                    ship_name=args.get("ship_name", ""),
                 )
-            elif name == "get_checklist":
-                return await get_checklist(
-                    args["phase"],
-                    self._context_store,
-                    aircraft_type=sim_state.aircraft,
-                )
-            elif name == "create_flight_plan":
-                return await create_flight_plan(
-                    args["departure"],
+            elif name == "get_ship_status":
+                return await get_ship_status(self._game_client)
+            elif name == "plan_trade_route":
+                return await plan_trade_route(
+                    args["origin"],
                     args["destination"],
-                    altitude=args.get("altitude", 5000),
-                    route=args.get("route", ""),
+                    args.get("cargo_scu", 100),
+                    self._uex_client,
                 )
+            elif name == "get_procedure":
+                return await get_procedure(
+                    args["activity"],
+                    self._context_store,
+                    ship_name=game_state.ship.name,
+                )
+            elif name == "get_skill":
+                return await get_skill(args["query"], self._skill_library)
             else:
                 return {"error": f"Unknown tool: {name}"}
         except Exception as e:

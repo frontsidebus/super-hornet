@@ -1,0 +1,90 @@
+# =============================================================================
+# Super Hornet Checklist — Mining Operation
+# =============================================================================
+# Procedures for ship-based mining in Star Citizen.
+# Primarily applicable to ships with mining lasers (Prospector, MOLE).
+# The Super Hornet can escort miners; these steps cover the mining role.
+# =============================================================================
+
+name: Mining Operation
+activity: MINING
+
+steps:
+  # --- Prospecting ---
+  - description: "Enter mining mode (press M)"
+    action: press_key
+    parameters: { key: "M" }
+    wait_after_ms: 1000
+
+  - description: "Deploy mining consumables if available"
+    action: wait
+    parameters: { duration: 0.5 }
+    wait_after_ms: 0
+
+  - description: "Scan asteroid field for minable rocks (ping: Tab)"
+    action: press_key
+    parameters: { key: "Tab" }
+    wait_after_ms: 2000
+
+  - description: "Identify rock composition — look for valuable minerals"
+    action: wait
+    parameters: { duration: 2.0 }
+    wait_after_ms: 0
+
+  - description: "Approach target rock within mining laser range (~200m)"
+    action: wait
+    parameters: { duration: 3.0 }
+    wait_after_ms: 0
+
+  # --- Fracturing ---
+  - description: "Activate mining laser (left mouse button)"
+    action: mouse_click
+    parameters: { button: "left" }
+    wait_after_ms: 500
+
+  - description: "Monitor rock instability meter — keep in green zone"
+    action: wait
+    parameters: { duration: 5.0 }
+    wait_after_ms: 0
+
+  - description: "Adjust laser power — throttle up/down to control energy"
+    action: wait
+    parameters: { duration: 3.0 }
+    wait_after_ms: 0
+
+  - description: "Wait for fracture threshold — rock splits"
+    action: wait
+    parameters: { duration: 5.0 }
+    wait_after_ms: 0
+
+  # --- Extraction ---
+  - description: "Switch to extraction mode on mining laser"
+    action: press_key
+    parameters: { key: "Mouse3" }
+    wait_after_ms: 500
+
+  - description: "Target valuable chunks (highest % desired mineral)"
+    action: wait
+    parameters: { duration: 2.0 }
+    wait_after_ms: 0
+
+  - description: "Activate extraction beam — pull minerals into cargo"
+    action: mouse_click
+    parameters: { button: "left" }
+    wait_after_ms: 3000
+
+  - description: "Monitor cargo capacity on HUD"
+    action: wait
+    parameters: { duration: 1.0 }
+    wait_after_ms: 0
+
+  # --- Wrap Up ---
+  - description: "Disengage mining mode (press M)"
+    action: press_key
+    parameters: { key: "M" }
+    wait_after_ms: 500
+
+  - description: "Set course to refinery station for processing"
+    action: wait
+    parameters: { duration: 1.0 }
+    wait_after_ms: 0

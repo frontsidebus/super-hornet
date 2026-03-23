@@ -1,7 +1,8 @@
-"""MERLIN orchestrator main entry point.
+"""Super Hornet orchestrator main entry point.
 
-Connects the SimConnect bridge, voice pipeline, context store, and Claude API
-into a unified conversation loop.
+Connects the perception layer (game.log parser, vision module), intelligence
+layer (Claude API, knowledge base, skill library), and action layer (voice,
+input simulation) into a unified conversation loop.
 """
 
 from __future__ import annotations
@@ -17,14 +18,16 @@ import httpx
 from .claude_client import ClaudeClient
 from .config import Settings, load_settings
 from .context_store import ContextStore
-from .flight_phase import FlightPhaseDetector
+from .game_activity import GameActivityDetector
+from .game_client import GameStateClient
+from .game_state import GameActivity, GameState
+from .health import ConnectionState, HealthMonitor
+from .input_simulator import InputSimulator
+from .log_parser import LogParserModule
 from .screen_capture import CaptureManager
-from .sim_client import (
-    ConnectionState,
-    HealthMonitor,
-    SimConnectClient,
-    SimState,
-)
+from .skill_library import SkillLibrary
+from .uex_client import UEXClient
+from .vision import VisionModule, load_roi_definitions
 from .voice import InputMode, VoiceInput, VoiceOutput
 
 logger = logging.getLogger(__name__)
@@ -33,25 +36,60 @@ logger = logging.getLogger(__name__)
 class Orchestrator:
     """Top-level coordinator that wires all subsystems together.
 
-    Includes health monitoring and graceful degradation: if ChromaDB is
-    down, RAG queries return empty results; if Whisper is down, voice input
-    falls back to text-only mode automatically.
+    Three-layer Constellation architecture:
+    - Perception: LogParserModule, VisionModule, UEXClient
+    - Reasoning: ClaudeClient, ContextStore, SkillLibrary, GameActivityDetector
+    - Action: InputSimulator, VoiceOutput, Web UI
     """
 
     def __init__(self, settings: Settings, text_only: bool = False) -> None:
         self._settings = settings
         self._text_only = text_only
 
-        self._sim_client = SimConnectClient(
-            settings.simconnect_bridge_url,
-            auto_reconnect=True,
-        )
-        self._context_store = ContextStore(settings.chromadb_url)
-        self._phase_detector = FlightPhaseDetector()
+        # --- Perception layer ---
+        self._log_parser = LogParserModule(settings.sc_game_log_path) if settings.sc_game_log_path else None
+
+        roi_definitions = []
+        if settings.vision_roi_config_path:
+            try:
+                roi_definitions = load_roi_definitions(settings.vision_roi_config_path)
+            except Exception:
+                logger.warning("Failed to load ROI definitions from %s", settings.vision_roi_config_path)
+
+        self._vision_module = VisionModule(
+            capture_fps=settings.vision_fps,
+            roi_definitions=roi_definitions,
+            anthropic_api_key=settings.anthropic_api_key,
+        ) if settings.vision_enabled else None
+
         self._capture_manager = CaptureManager(
             fps=settings.screen_capture_fps,
             enabled=settings.screen_capture_enabled,
         )
+
+        self._game_client = GameStateClient(
+            log_parser=self._log_parser,
+            vision_module=self._vision_module,
+        )
+
+        self._uex_client = UEXClient(
+            base_url=settings.uex_api_base_url,
+            api_key=settings.uex_api_key,
+        )
+
+        # --- Intelligence layer ---
+        self._context_store = ContextStore(
+            settings.chromadb_url,
+            collection_name=settings.knowledge_base_collection,
+        )
+        self._skill_library = SkillLibrary(
+            settings.chromadb_url,
+            collection_name=settings.skill_library_collection,
+        )
+        self._activity_detector = GameActivityDetector()
+
+        # --- Action layer ---
+        self._input_sim = InputSimulator(enabled=settings.input_simulation_enabled)
         self._voice_input = VoiceInput(
             whisper_url=settings.whisper_url,
             mode=InputMode.PUSH_TO_TALK,
@@ -60,89 +98,97 @@ class Orchestrator:
             api_key=settings.elevenlabs_api_key,
             voice_id=settings.voice_id,
         )
+
+        # --- Claude client (wired to all subsystems) ---
         self._claude = ClaudeClient(
             api_key=settings.anthropic_api_key,
             model=settings.claude_model,
-            sim_client=self._sim_client,
+            game_client=self._game_client,
             context_store=self._context_store,
+            skill_library=self._skill_library,
+            uex_client=self._uex_client,
+            input_simulator=self._input_sim,
             max_tokens=settings.claude_max_tokens,
             max_tokens_briefing=settings.claude_max_tokens_briefing,
             max_history=settings.claude_max_history,
         )
+
         self._running = False
-        self._sim_connected = False
+        self._game_connected = False
         self._tts_enabled = bool(
             settings.elevenlabs_api_key and settings.voice_id
         )
 
         # Health monitoring
         self._health = HealthMonitor()
-        self._health.register("simconnect_bridge")
+        self._health.register("game_log")
+        self._health.register("vision")
         self._health.register("chromadb")
         self._health.register("whisper")
         self._health.register("claude_api")
+        self._health.register("uex_api")
 
         # Whisper degradation tracking
         self._whisper_available = True
 
     async def start(self) -> None:
         """Initialize all subsystems and enter the main loop."""
-        logger.info("MERLIN orchestrator starting up")
+        logger.info("Super Hornet orchestrator starting up")
 
-        # Try connecting to the sim bridge (non-fatal if unavailable)
+        # Start game state client (non-fatal if unavailable)
         if not self._text_only:
             try:
-                await self._sim_client.connect()
-                self._sim_connected = True
-                self._sim_client.subscribe(self._on_state_update)
-                self._health.update(
-                    "simconnect_bridge", True, "Connected"
-                )
+                await self._game_client.connect()
+                self._game_connected = True
+                self._game_client.subscribe(self._on_state_update)
+                self._health.update("game_log", True, "Connected")
             except Exception:
                 logger.warning(
-                    "Could not connect to SimConnect bridge at %s; "
-                    "running in text-only mode without live telemetry",
-                    self._settings.simconnect_bridge_url,
+                    "Could not start game state client; "
+                    "running in text-only mode without live game data",
                 )
                 self._health.update(
-                    "simconnect_bridge",
+                    "game_log",
                     False,
                     "Connection failed; text-only mode",
                 )
         else:
-            logger.info(
-                "Text-only mode: skipping SimConnect bridge connection"
-            )
-            self._health.update(
-                "simconnect_bridge", False, "Skipped (text-only mode)"
-            )
+            logger.info("Text-only mode: skipping game state client")
+            self._health.update("game_log", False, "Skipped (text-only mode)")
 
-        # Update ChromaDB health from context store availability
+        # Vision health
+        if self._vision_module:
+            self._health.update("vision", True, "Enabled")
+        else:
+            self._health.update("vision", False, "Disabled")
+
+        # ChromaDB health
         if self._context_store.available:
             self._health.update("chromadb", True, "Connected")
         else:
-            self._health.update(
-                "chromadb", False, "Unavailable; RAG disabled"
-            )
+            self._health.update("chromadb", False, "Unavailable; RAG disabled")
 
         # Whisper health check
         await self._check_whisper_health()
 
-        # Claude API is assumed healthy until a call fails
+        # Claude API assumed healthy until a call fails
         self._health.update("claude_api", True, "Ready")
+
+        # UEX API health (best effort)
+        self._health.update("uex_api", True, "Ready")
 
         await self._capture_manager.start()
 
         self._running = True
-        logger.info("MERLIN is ready.")
+        logger.info("Super Hornet is ready.")
 
         mode_label = (
-            "text-only" if not self._sim_connected else "sim-connected"
+            "text-only" if not self._game_connected else "game-connected"
         )
         tts_label = "TTS enabled" if self._tts_enabled else "TTS disabled"
 
         print(
-            f"\n=== MERLIN AI Co-Pilot ({mode_label}, {tts_label}) ==="
+            f"\n=== Super Hornet AI Wingman ({mode_label}, {tts_label}) ==="
         )
         print(
             "Type your message, or use /voice to toggle voice input."
@@ -157,9 +203,9 @@ class Orchestrator:
     async def stop(self) -> None:
         self._running = False
         await self._capture_manager.stop()
-        if self._sim_connected:
-            await self._sim_client.disconnect()
-        logger.info("MERLIN orchestrator shut down")
+        if self._game_connected:
+            await self._game_client.disconnect()
+        logger.info("Super Hornet orchestrator shut down")
 
     # -------------------------------------------------------------------
     # Health checks
@@ -174,9 +220,7 @@ class Orchestrator:
                 )
                 if resp.status_code == 200:
                     self._whisper_available = True
-                    self._health.update(
-                        "whisper", True, "Responding"
-                    )
+                    self._health.update("whisper", True, "Responding")
                 else:
                     self._whisper_available = False
                     self._health.update(
@@ -192,23 +236,19 @@ class Orchestrator:
                 f"Unreachable ({exc}); voice input degraded",
             )
 
-    def _update_bridge_health(self) -> None:
-        """Refresh bridge health from the sim client's connection state."""
-        cs = self._sim_client.connection_state
+    def _update_game_health(self) -> None:
+        """Refresh game client health."""
+        cs = self._game_client.connection_state
         if cs == ConnectionState.CONNECTED:
-            self._health.update("simconnect_bridge", True, "Connected")
+            self._health.update("game_log", True, "Connected")
         elif cs == ConnectionState.RECONNECTING:
-            self._health.update(
-                "simconnect_bridge", False, "Reconnecting..."
-            )
+            self._health.update("game_log", False, "Reconnecting...")
         else:
-            self._health.update(
-                "simconnect_bridge", False, "Disconnected"
-            )
+            self._health.update("game_log", False, "Disconnected")
 
     def get_health_summary(self) -> dict[str, Any]:
         """Return health summary for all subsystems."""
-        self._update_bridge_health()
+        self._update_game_health()
         return self._health.summary()
 
     # -------------------------------------------------------------------
@@ -221,13 +261,10 @@ class Orchestrator:
 
         while self._running:
             try:
-                # Periodically refresh bridge health state
-                self._update_bridge_health()
+                self._update_game_health()
 
                 # Get user input
                 if use_voice:
-                    # Graceful degradation: if Whisper is down, fall
-                    # back to text input automatically.
                     if not self._whisper_available:
                         print(
                             "[Whisper unavailable -- "
@@ -263,7 +300,7 @@ class Orchestrator:
                     try:
                         user_text = (
                             await asyncio.get_running_loop().run_in_executor(
-                                None, lambda: input("Captain> ")
+                                None, lambda: input("Commander> ")
                             )
                         )
                     except EOFError:
@@ -282,8 +319,8 @@ class Orchestrator:
                             use_voice = not use_voice
                         continue
 
-                # Get current sim state and detect flight phase
-                sim_state = self._get_current_sim_state()
+                # Get current game state and detect activity
+                game_state = self._get_current_game_state()
 
                 # Optionally grab screen capture for vision
                 image_b64 = None
@@ -293,13 +330,13 @@ class Orchestrator:
                     )
 
                 # Stream Claude response
-                print("MERLIN: ", end="", flush=True)
+                print("Super Hornet: ", end="", flush=True)
                 full_response = ""
 
                 try:
                     async for chunk in self._claude.chat(
                         user_text,
-                        sim_state=sim_state,
+                        game_state=game_state,
                         image_base64=image_b64,
                     ):
                         print(chunk, end="", flush=True)
@@ -330,7 +367,7 @@ class Orchestrator:
             except Exception:
                 logger.exception("Error in conversation loop")
                 print(
-                    "\n[MERLIN encountered an error. "
+                    "\n[Super Hornet encountered an error. "
                     "Check logs for details.]"
                 )
 
@@ -343,27 +380,26 @@ class Orchestrator:
         if exc is not None:
             logger.error("TTS playback task failed: %s", exc)
 
-    def _get_current_sim_state(self) -> SimState:
-        """Return the latest sim state, or a default empty state."""
-        if self._sim_connected:
-            cs = self._sim_client.connection_state
+    def _get_current_game_state(self) -> GameState:
+        """Return the latest game state with detected activity."""
+        if self._game_connected:
+            cs = self._game_client.connection_state
             if cs == ConnectionState.CONNECTED:
-                state = self._sim_client.state
-                detected_phase = self._phase_detector.update(state)
-                state.flight_phase = detected_phase
+                state = self._game_client.state
+                detected_activity = self._activity_detector.update(state)
+                state.activity = detected_activity
                 return state
-            # Bridge disconnected/reconnecting -- return stale state
             logger.debug(
-                "Bridge is %s; using last-known state", cs.value
+                "Game client is %s; using last-known state", cs.value
             )
-            return self._sim_client.state
-        return SimState()
+            return self._game_client.state
+        return GameState()
 
     async def _handle_command(self, cmd: str) -> bool:
         """Process slash commands. Returns True if command was handled."""
         if cmd == "/quit":
             self._running = False
-            print("Shutting down MERLIN...")
+            print("Shutting down Super Hornet...")
             return True
 
         if cmd == "/voice":
@@ -419,32 +455,27 @@ class Orchestrator:
             return True
 
         if cmd == "/status":
-            self._update_bridge_health()
-            if self._sim_connected:
-                cs = self._sim_client.connection_state
-                stats = self._sim_client.stats
+            self._update_game_health()
+            if self._game_connected:
+                cs = self._game_client.connection_state
                 if cs == ConnectionState.CONNECTED:
-                    state = self._sim_client.state
-                    print(
-                        f"SimConnect: {cs.value} | "
-                        f"{state.telemetry_summary()}"
-                    )
+                    state = self._game_client.state
+                    print(f"Game: {cs.value} | {state.state_summary()}")
                 else:
-                    print(
-                        f"SimConnect: {cs.value} "
-                        f"(reconnects: {stats['reconnect_count']})"
-                    )
-                print(
-                    f"  Messages received: {stats['messages_received']}"
-                    f" | Last msg: {stats['last_message_age_s']}s ago"
-                )
+                    print(f"Game: {cs.value}")
             else:
-                print("SimConnect: Not connected (text-only mode)")
+                print("Game: Not connected (text-only mode)")
+
             print(
-                f"Context store: "
+                f"Knowledge base: "
                 f"{'available' if self._context_store.available else 'unavailable'}"
             )
             print(f"Docs in store: {self._context_store.document_count}")
+            print(
+                f"Skill library: "
+                f"{'available' if self._skill_library.available else 'unavailable'}"
+            )
+            print(f"Skills: {self._skill_library.skill_count}")
             print(
                 f"TTS: {'enabled' if self._tts_enabled else 'disabled'}"
             )
@@ -456,26 +487,30 @@ class Orchestrator:
                 f"Whisper: "
                 f"{'available' if self._whisper_available else 'unavailable'}"
             )
+            print(
+                f"Input sim: "
+                f"{'enabled' if self._input_sim.enabled else 'disabled'}"
+            )
             return True
 
         print(f"Unknown command: {cmd}")
         return True
 
-    async def _on_state_update(self, state: SimState) -> None:
-        """Callback for sim state updates from the bridge."""
-        detected_phase = self._phase_detector.update(state)
-        state.flight_phase = detected_phase
+    async def _on_state_update(self, state: GameState) -> None:
+        """Callback for game state updates from the perception layer."""
+        detected_activity = self._activity_detector.update(state)
+        state.activity = detected_activity
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="MERLIN AI Co-Pilot Orchestrator"
+        description="Super Hornet AI Wingman for Star Citizen"
     )
     parser.add_argument(
         "--text-only",
         action="store_true",
         default=False,
-        help="Skip SimConnect bridge connection (text chat only)",
+        help="Skip game state client connection (text chat only)",
     )
     return parser.parse_args()
 
@@ -508,7 +543,7 @@ async def async_main() -> None:
 
 
 def run() -> None:
-    """Entry point for the merlin console script."""
+    """Entry point for the hornet console script."""
     asyncio.run(async_main())
 
 
