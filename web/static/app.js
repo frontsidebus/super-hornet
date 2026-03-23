@@ -5,6 +5,12 @@
 (() => {
   'use strict';
 
+  // Overlay mode detection
+  const isOverlay = new URLSearchParams(window.location.search).has('overlay');
+  if (isOverlay) {
+    document.body.classList.add('overlay-mode');
+  }
+
   // ── Configuration ──────────────────────────────────────
   const WS_HOST = window.location.hostname || 'localhost';
   const WS_PORT = window.location.port || 3838;
