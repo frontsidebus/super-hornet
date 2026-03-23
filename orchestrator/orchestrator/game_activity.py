@@ -156,9 +156,13 @@ class GameActivityDetector:
 
         # --- Generic ship / on-foot fallback -----------------------------
         if state.player.in_ship:
-            if state.ship.speed_scm > _SHIP_IDLE_SPEED:
+            # Without vision, we can't read speed from the HUD. Default to
+            # SHIP_FLIGHT when in a ship — it's the more useful assumption
+            # and matches player expectation. Vision pipeline will refine this
+            # once enabled (checking speed_scm > threshold).
+            if state.ship.power_on or state.ship.speed_scm > _SHIP_IDLE_SPEED:
                 return GameActivity.SHIP_FLIGHT
-            return GameActivity.SHIP_IDLE
+            return GameActivity.SHIP_FLIGHT  # assume flight until vision proves otherwise
 
         # Not in a ship -- player is on foot (or idle at a menu, etc.)
         if state.player.in_vehicle:
