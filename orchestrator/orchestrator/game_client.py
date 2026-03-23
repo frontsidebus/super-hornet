@@ -38,6 +38,9 @@ class GameStateClient:
     a unified GameState snapshot. Subscribers are notified on each update.
     """
 
+    # Minimum seconds between vision API calls to control costs
+    _VISION_THROTTLE_SECS: float = 10.0
+
     def __init__(
         self,
         log_parser: LogParserModule | None = None,
@@ -52,6 +55,7 @@ class GameStateClient:
         self._update_task: asyncio.Task[None] | None = None
         self._connection_state = ConnectionState.DISCONNECTED
         self._last_update_time: float = 0.0
+        self._last_vision_time: float = 0.0
 
     @property
     def state(self) -> GameState:
@@ -167,8 +171,30 @@ class GameStateClient:
                     state.player.in_ship = True
                     break
 
-        # Ingest vision data (if available and recently updated)
-        if self._vision_module and self._vision_module.latest_analysis:
-            state.vision_data = self._vision_module.latest_analysis
+        # Ingest vision data (throttled to control API costs)
+        if self._vision_module:
+            now = time.monotonic()
+            elapsed = now - self._last_vision_time
+            if elapsed >= self._VISION_THROTTLE_SECS:
+                try:
+                    analysis = await self._vision_module.analyze_hud(
+                        state.activity or GameActivity.ON_FOOT,
+                    )
+                    if analysis:
+                        self._last_vision_time = now
+                        logger.debug(
+                            "Vision analysis updated (%d keys)",
+                            len(analysis),
+                        )
+                except Exception:
+                    logger.warning(
+                        "Vision analysis failed", exc_info=True,
+                    )
+
+            # Always merge latest cached analysis into state
+            if self._vision_module.latest_analysis:
+                state.vision_data = (
+                    self._vision_module.latest_analysis
+                )
 
         return state

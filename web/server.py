@@ -16,6 +16,7 @@ import base64
 import json
 import logging
 import math
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,9 @@ from orchestrator.game_state import GameActivity, GameState  # noqa: E402
 from orchestrator.game_activity import GameActivityDetector  # noqa: E402
 from orchestrator.game_client import GameStateClient  # noqa: E402
 from orchestrator.log_parser import LogParserModule  # noqa: E402
+from orchestrator.screen_capture import CaptureManager  # noqa: E402
 from orchestrator.skill_library import SkillLibrary  # noqa: E402
+from orchestrator.vision import VisionModule, load_roi_definitions  # noqa: E402
 from orchestrator.tts_preprocessor import preprocess_for_tts  # noqa: E402
 from orchestrator.uex_client import UEXClient  # noqa: E402
 
@@ -66,6 +69,8 @@ context_store: ContextStore | None = None
 activity_detector: GameActivityDetector | None = None
 uex_client: UEXClient | None = None
 skill_library: SkillLibrary | None = None
+vision_module: VisionModule | None = None
+capture_manager: CaptureManager | None = None
 
 # Track whether we have a live connection to the game state pipeline
 _game_connected: bool = False
@@ -167,7 +172,8 @@ async def _prepopulate_tts_cache() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global game_client, claude_client, context_store, activity_detector
-    global uex_client, skill_library, _game_connected
+    global uex_client, skill_library, vision_module, capture_manager
+    global _game_connected
 
     logger.info("Starting Super Hornet web server")
 
@@ -183,7 +189,22 @@ async def lifespan(app: FastAPI):
     # Skill library (ChromaDB-backed)
     skill_library = SkillLibrary(chromadb_url=settings.chromadb_url)
 
-    # Game state client (log parser + no vision for now)
+    # Vision module (screen capture + Claude Vision analysis)
+    if settings.vision_enabled:
+        vision_module = VisionModule(
+            anthropic_api_key=settings.anthropic_api_key,
+        )
+        logger.info("Vision module created (enabled)")
+    else:
+        vision_module = None
+        logger.info("Vision module disabled")
+
+    # Capture manager for on-demand screen grabs
+    capture_manager = CaptureManager(
+        fps=1, enabled=settings.vision_enabled,
+    )
+
+    # Game state client (log parser + vision)
     log_parser = (
         LogParserModule(settings.sc_game_log_path)
         if settings.sc_game_log_path
@@ -191,7 +212,7 @@ async def lifespan(app: FastAPI):
     )
     game_client = GameStateClient(
         log_parser=log_parser,
-        vision_module=None,  # Vision not yet wired up
+        vision_module=vision_module,
     )
     try:
         await game_client.connect()
@@ -424,6 +445,70 @@ async def text_to_speech(request: TTSRequest):
 
 
 # ---------------------------------------------------------------------------
+# Vision endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/vision/analyze")
+async def vision_analyze():
+    """Capture the screen and analyse it via Claude Vision."""
+    if vision_module is None:
+        return Response(
+            content=json.dumps({"error": "Vision not enabled"}),
+            status_code=503,
+            media_type="application/json",
+        )
+
+    frame_b64 = await vision_module.capture_full_frame()
+    if not frame_b64:
+        return Response(
+            content=json.dumps({"error": "Screen capture failed"}),
+            status_code=500,
+            media_type="application/json",
+        )
+
+    prompt = (
+        "Analyze this Star Citizen HUD screenshot. Describe: "
+        "ship status, shields, fuel, location, threats, "
+        "notable elements."
+    )
+    analysis = await vision_module.analyze_frame(frame_b64, prompt)
+    return {
+        "analysis": analysis,
+        "timestamp": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+        ),
+    }
+
+
+@app.get("/api/vision/capture")
+async def vision_capture():
+    """Capture the current screen and return as JPEG (debug)."""
+    if vision_module is None and capture_manager is None:
+        return Response(
+            content=json.dumps({"error": "Vision not enabled"}),
+            status_code=503,
+            media_type="application/json",
+        )
+
+    frame_b64: str | None = None
+    if vision_module is not None:
+        frame_b64 = await vision_module.capture_full_frame()
+    elif capture_manager is not None:
+        frame_b64 = await capture_manager.capture_once()
+
+    if not frame_b64:
+        return Response(
+            content=json.dumps({"error": "Screen capture failed"}),
+            status_code=500,
+            media_type="application/json",
+        )
+
+    jpeg_bytes = base64.b64decode(frame_b64)
+    return Response(content=jpeg_bytes, media_type="image/jpeg")
+
+
+# ---------------------------------------------------------------------------
 # WebSocket: /ws/telemetry
 # ---------------------------------------------------------------------------
 
@@ -645,12 +730,28 @@ async def ws_chat(ws: WebSocket):
             else:
                 continue
 
+            # Detect scan / vision trigger commands
+            scan_image_b64: str | None = None
+            lower_text = user_text.lower().strip()
+            is_scan = (
+                lower_text.startswith("/scan")
+                or "what do you see" in lower_text
+                or "look at my screen" in lower_text
+            )
+            if is_scan and vision_module is not None:
+                scan_image_b64 = await vision_module.capture_full_frame()
+                if not scan_image_b64:
+                    logger.warning("Scan requested but capture failed")
+
             # Reset interrupt event for the new response
             interrupt_event.clear()
 
             # Launch response streaming as a cancellable task
             active_response_task = asyncio.create_task(
-                _stream_response(ws, user_text, interrupt_event)
+                _stream_response(
+                    ws, user_text, interrupt_event,
+                    image_base64=scan_image_b64,
+                )
             )
 
     except WebSocketDisconnect:
@@ -814,12 +915,16 @@ async def _stream_response(
     ws: WebSocket,
     user_text: str,
     interrupt: asyncio.Event,
+    image_base64: str | None = None,
 ) -> None:
     """Stream Claude response with TTS. Cancellable via interrupt event.
 
     Uses ElevenLabs WebSocket streaming for low-latency audio, with
     REST fallback. This runs as a task so it can be cancelled when the
     user barges in.
+
+    If *image_base64* is provided it is forwarded to Claude as a vision
+    attachment (e.g. screen-scan feature).
     """
     tts_enabled = bool(settings.elevenlabs_api_key and settings.voice_id)
     sentence_buffer = ""
@@ -859,7 +964,9 @@ async def _stream_response(
                 current_game_state.activity = detected
 
         async for chunk in claude_client.chat(
-            user_text, game_state=current_game_state
+            user_text,
+            game_state=current_game_state,
+            image_base64=image_base64,
         ):
             if interrupt.is_set():
                 logger.info("Response interrupted mid-stream")

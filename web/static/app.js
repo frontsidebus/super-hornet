@@ -37,6 +37,7 @@
     volumePct:        document.getElementById('volume-pct'),
     connQuality:      document.getElementById('conn-quality'),
     connQualityText:  document.getElementById('conn-quality-text'),
+    scanButton:       document.getElementById('scan-button'),
   };
 
   // ── State ──────────────────────────────────────────────
@@ -759,6 +760,30 @@
       if (state.isPlayingAudio || state.audioQueue.length > 0) {
         bargeIn();
       }
+    });
+  }
+
+  // ── Scan Button ───────────────────────────────────────
+
+  if (dom.scanButton) {
+    dom.scanButton.addEventListener('click', () => {
+      if (!state.chatWs || state.chatWs.readyState !== WebSocket.OPEN) {
+        addSystemMessage('Cannot scan: Super Hornet terminal offline.');
+        return;
+      }
+      // Show scanning status briefly
+      const txt = dom.voiceStatusText;
+      if (txt) {
+        txt.textContent = 'SCANNING...';
+        txt.classList.add('processing');
+        setTimeout(() => {
+          if (txt.textContent === 'SCANNING...') {
+            txt.textContent = 'IDLE';
+            txt.classList.remove('processing');
+          }
+        }, 3000);
+      }
+      sendChatText('/scan what do you see on my screen?');
     });
   }
 
