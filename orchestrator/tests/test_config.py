@@ -12,10 +12,30 @@ from orchestrator.config import Settings, load_settings
 class TestSettingsDefaults:
     """Verify default values when only required fields are provided."""
 
-    def test_default_simconnect_url(self, mock_env_vars: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("SIMCONNECT_BRIDGE_URL", raising=False)
+    def test_default_sc_game_log_path_empty(self, mock_env_vars: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SC_GAME_LOG_PATH", raising=False)
         s = Settings(anthropic_api_key="sk-test")
-        assert s.simconnect_bridge_url == "ws://localhost:8080"
+        assert s.sc_game_log_path == ""
+
+    def test_default_vision_enabled(self, mock_env_vars: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("VISION_ENABLED", raising=False)
+        s = Settings(anthropic_api_key="sk-test")
+        assert s.vision_enabled is True
+
+    def test_default_input_simulation_disabled(self, mock_env_vars: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("INPUT_SIMULATION_ENABLED", raising=False)
+        s = Settings(anthropic_api_key="sk-test")
+        assert s.input_simulation_enabled is False
+
+    def test_default_knowledge_base_collection(self, mock_env_vars: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("KNOWLEDGE_BASE_COLLECTION", raising=False)
+        s = Settings(anthropic_api_key="sk-test")
+        assert s.knowledge_base_collection == "hornet_knowledge"
+
+    def test_default_skill_library_collection(self, mock_env_vars: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SKILL_LIBRARY_COLLECTION", raising=False)
+        s = Settings(anthropic_api_key="sk-test")
+        assert s.skill_library_collection == "hornet_skills"
 
     def test_default_whisper_model(self, mock_env_vars: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("WHISPER_MODEL", raising=False)
@@ -61,9 +81,10 @@ class TestSettingsDefaults:
 class TestSettingsEnvOverrides:
     """Verify that environment variables override defaults."""
 
-    def test_env_overrides_simconnect_url(self, mock_env_vars: dict[str, str]) -> None:
+    def test_env_overrides_sc_game_log_path(self, mock_env_vars: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SC_GAME_LOG_PATH", "/tmp/game.log")
         s = Settings()
-        assert s.simconnect_bridge_url == "ws://localhost:9999"
+        assert s.sc_game_log_path == "/tmp/game.log"
 
     def test_env_overrides_whisper_model(self, mock_env_vars: dict[str, str]) -> None:
         s = Settings()

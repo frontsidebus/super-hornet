@@ -75,7 +75,7 @@ async def get_game_state(game_client: GameStateClient) -> dict[str, Any]:
         logger.warning("Failed to retrieve game state: %s", exc)
         return {"error": f"Failed to retrieve game state: {exc}"}
 
-    return state.to_dict()
+    return state.model_dump()
 
 
 async def lookup_commodity(

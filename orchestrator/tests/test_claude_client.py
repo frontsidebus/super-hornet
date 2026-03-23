@@ -8,18 +8,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from orchestrator.claude_client import (
-    MERLIN_PERSONA,
+    HORNET_PERSONA,
     STOP_SEQUENCES,
     TOOL_DEFINITIONS,
     ClaudeClient,
     classify_query,
     max_tokens_for_query,
 )
-from orchestrator.sim_client import (
-    AutopilotState,
-    Environment,
-    FlightPhase,
-    SimState,
+from orchestrator.game_state import (
+    GameActivity,
+    GameState,
+    PlayerStatus,
+    ShipStatus,
+    CombatState,
 )
 
 
@@ -29,9 +30,9 @@ from orchestrator.sim_client import (
 
 
 @pytest.fixture
-def mock_sim_client() -> MagicMock:
+def mock_game_client() -> MagicMock:
     client = MagicMock()
-    client.get_state = AsyncMock(return_value=SimState())
+    client.get_state = AsyncMock(return_value=GameState())
     return client
 
 
@@ -44,19 +45,19 @@ def mock_context_store() -> MagicMock:
 
 
 @pytest.fixture
-def claude_client(mock_sim_client: MagicMock, mock_context_store: MagicMock) -> ClaudeClient:
+def claude_client(mock_game_client: MagicMock, mock_context_store: MagicMock) -> ClaudeClient:
     with patch("orchestrator.claude_client.anthropic.AsyncAnthropic"):
         return ClaudeClient(
             api_key="sk-ant-test",
             model="claude-sonnet-4-20250514",
-            sim_client=mock_sim_client,
+            game_client=mock_game_client,
             context_store=mock_context_store,
         )
 
 
 @pytest.fixture
 def claude_client_custom_tokens(
-    mock_sim_client: MagicMock,
+    mock_game_client: MagicMock,
     mock_context_store: MagicMock,
 ) -> ClaudeClient:
     """ClaudeClient with custom token limits for testing."""
@@ -64,12 +65,38 @@ def claude_client_custom_tokens(
         return ClaudeClient(
             api_key="sk-ant-test",
             model="claude-sonnet-4-20250514",
-            sim_client=mock_sim_client,
+            game_client=mock_game_client,
             context_store=mock_context_store,
             max_tokens=512,
             max_tokens_briefing=1500,
             max_history=10,
         )
+
+
+@pytest.fixture
+def game_state_combat() -> GameState:
+    """Game state during active combat."""
+    return GameState(
+        activity=GameActivity.COMBAT,
+        player=PlayerStatus(
+            in_ship=True,
+            location_system="Stanton",
+            location_body="Crusader",
+        ),
+        ship=ShipStatus(
+            name="Super Hornet",
+            shields_front=60.0,
+            shields_rear=40.0,
+            hull_percent=85.0,
+            weapons_armed=True,
+        ),
+        combat=CombatState(
+            under_attack=True,
+            hostile_count=2,
+            target_name="Buccaneer",
+            target_distance_km=1.2,
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -87,30 +114,30 @@ class TestToolDefinitions:
             assert "input_schema" in tool
             assert tool["input_schema"]["type"] == "object"
 
-    def test_get_sim_state_has_no_required_params(self) -> None:
-        tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "get_sim_state")
+    def test_get_game_state_has_no_required_params(self) -> None:
+        tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "get_game_state")
         assert tool["input_schema"]["required"] == []
 
-    def test_lookup_airport_requires_identifier(self) -> None:
-        tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "lookup_airport")
-        assert "identifier" in tool["input_schema"]["required"]
+    def test_lookup_commodity_requires_commodity(self) -> None:
+        tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "lookup_commodity")
+        assert "commodity" in tool["input_schema"]["required"]
 
-    def test_search_manual_requires_query(self) -> None:
-        tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "search_manual")
+    def test_search_knowledge_requires_query(self) -> None:
+        tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "search_knowledge")
         assert "query" in tool["input_schema"]["required"]
 
-    def test_get_checklist_requires_phase(self) -> None:
-        tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "get_checklist")
-        assert "phase" in tool["input_schema"]["required"]
+    def test_get_procedure_requires_activity(self) -> None:
+        tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "get_procedure")
+        assert "activity" in tool["input_schema"]["required"]
 
-    def test_create_flight_plan_requires_departure_and_destination(self) -> None:
-        tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "create_flight_plan")
+    def test_plan_trade_route_requires_origin_and_destination(self) -> None:
+        tool = next(t for t in TOOL_DEFINITIONS if t["name"] == "plan_trade_route")
         required = tool["input_schema"]["required"]
-        assert "departure" in required
+        assert "origin" in required
         assert "destination" in required
 
-    def test_five_tools_defined(self) -> None:
-        assert len(TOOL_DEFINITIONS) == 5
+    def test_seven_tools_defined(self) -> None:
+        assert len(TOOL_DEFINITIONS) == 7
 
     def test_tool_names_are_unique(self) -> None:
         names = [t["name"] for t in TOOL_DEFINITIONS]
@@ -129,18 +156,14 @@ class TestQueryClassification:
         "message,expected",
         [
             ("roger", "short"),
-            ("Roger that", "short"),
             ("copy", "short"),
-            ("wilco", "short"),
-            ("thanks", "short"),
-            ("thank you", "short"),
             ("got it", "short"),
             ("ok", "short"),
             ("yes", "short"),
             ("no", "short"),
-            ("What's my altitude?", "short"),
-            ("What's our heading?", "short"),
-            ("How much fuel do we have?", "short"),
+            ("What's my shields?", "short"),
+            ("Where am I?", "short"),
+            ("How much fuel?", "short"),
             ("How far to destination?", "short"),
         ],
     )
@@ -150,14 +173,11 @@ class TestQueryClassification:
     @pytest.mark.parametrize(
         "message,expected",
         [
-            ("Give me the approach briefing", "briefing"),
-            ("Run the preflight checklist", "briefing"),
-            ("Create a flight plan to KLAX", "briefing"),
-            ("Walk me through the engine start", "briefing"),
-            ("Explain how the autopilot works", "briefing"),
-            ("How does the fuel system work?", "briefing"),
-            ("Plan a flight from KJFK to KORD", "briefing"),
-            ("Build a route to Chicago", "briefing"),
+            ("Plan a trade route", "briefing"),
+            ("Walk me through mining", "briefing"),
+            ("Explain quantum travel", "briefing"),
+            ("Create a loadout", "briefing"),
+            ("Build a route to New Babbage", "briefing"),
         ],
     )
     def test_briefing_queries(self, message: str, expected: str) -> None:
@@ -166,10 +186,9 @@ class TestQueryClassification:
     @pytest.mark.parametrize(
         "message,expected",
         [
-            ("What airport is nearby?", "normal"),
-            ("Should I descend now?", "normal"),
-            ("What's the weather looking like?", "normal"),
-            ("Can you check the NOTAMs?", "normal"),
+            ("What ship should I use?", "normal"),
+            ("Should I engage?", "normal"),
+            ("Any hostiles nearby?", "normal"),
         ],
     )
     def test_normal_queries(self, message: str, expected: str) -> None:
@@ -212,87 +231,65 @@ class TestMaxTokensForQuery:
 
 
 class TestSystemPromptBuilding:
-    """Test _build_system_prompt with various SimState and context combinations."""
+    """Test _build_system_prompt with various GameState and context combinations."""
 
     def test_prompt_contains_persona(self, claude_client: ClaudeClient) -> None:
-        prompt = claude_client._build_system_prompt(SimState(), [])
-        assert "MERLIN" in prompt
-        assert "Captain" in prompt
+        prompt = claude_client._build_system_prompt(GameState(), [])
+        assert "Super Hornet" in prompt or "Commander" in prompt
 
-    def test_prompt_contains_telemetry_summary(
+    def test_prompt_contains_state_summary(
         self,
         claude_client: ClaudeClient,
-        sim_state_cruise: SimState,
+        game_state_combat: GameState,
     ) -> None:
-        prompt = claude_client._build_system_prompt(sim_state_cruise, [])
-        assert "CRUISE" in prompt
-        assert "6500ft" in prompt
+        prompt = claude_client._build_system_prompt(game_state_combat, [])
+        assert "COMBAT" in prompt
+        assert "UNDER ATTACK" in prompt
 
-    def test_prompt_contains_aircraft(self, claude_client: ClaudeClient) -> None:
-        state = SimState(aircraft="Cessna 172 Skyhawk")
-        prompt = claude_client._build_system_prompt(state, [])
-        assert "Cessna 172 Skyhawk" in prompt
-
-    def test_prompt_unknown_aircraft(self, claude_client: ClaudeClient) -> None:
-        state = SimState(aircraft="")
-        prompt = claude_client._build_system_prompt(state, [])
-        assert "Unknown" in prompt
-
-    def test_prompt_includes_on_ground_status(self, claude_client: ClaudeClient) -> None:
-        state = SimState()  # AGL=0 => on_ground=True
-        prompt = claude_client._build_system_prompt(state, [])
-        assert "On ground: True" in prompt
-
-    def test_prompt_includes_autopilot_when_engaged(
-        self,
-        claude_client: ClaudeClient,
-    ) -> None:
-        state = SimState(
-            autopilot=AutopilotState(
-                master=True, heading=270, altitude=6500, vertical_speed=-500,
-            )
+    def test_prompt_contains_ship_name(self, claude_client: ClaudeClient) -> None:
+        state = GameState(
+            player=PlayerStatus(in_ship=True),
+            ship=ShipStatus(name="Gladius"),
         )
         prompt = claude_client._build_system_prompt(state, [])
-        assert "Autopilot:" in prompt
-        assert "HDG 270" in prompt
-        assert "ALT 6500" in prompt
+        assert "Gladius" in prompt
 
-    def test_prompt_excludes_autopilot_when_disengaged(
+    def test_prompt_includes_crimestat_warning(self, claude_client: ClaudeClient) -> None:
+        state = GameState(player=PlayerStatus(crime_stat=3))
+        prompt = claude_client._build_system_prompt(state, [])
+        assert "CrimeStat" in prompt or "crime" in prompt.lower()
+
+    def test_prompt_includes_activity_style_for_combat(
         self,
         claude_client: ClaudeClient,
     ) -> None:
-        state = SimState(autopilot=AutopilotState(master=False))
+        state = GameState(activity=GameActivity.COMBAT)
         prompt = claude_client._build_system_prompt(state, [])
-        assert "Autopilot:" not in prompt
+        assert "ULTRA-BRIEF" in prompt
 
-    def test_prompt_includes_weather(self, claude_client: ClaudeClient) -> None:
-        state = SimState(
-            environment=Environment(
-                wind_speed_kts=12, wind_direction=270, visibility_sm=10,
-                temperature_c=20, barometer_inhg=30.12,
-            ),
-        )
+    def test_prompt_includes_activity_style_for_quantum(
+        self,
+        claude_client: ClaudeClient,
+    ) -> None:
+        state = GameState(activity=GameActivity.QUANTUM_TRAVEL)
         prompt = claude_client._build_system_prompt(state, [])
-        assert "Wind" in prompt
-        assert "Vis" in prompt
-        assert "Temp" in prompt
-        assert "QNH" in prompt
+        assert "Conversational" in prompt
 
     def test_prompt_includes_context_docs(self, claude_client: ClaudeClient) -> None:
         docs = [
             {
-                "content": "Engine runup procedure for Cessna 172...",
-                "metadata": {"source": "poh.pdf"},
+                "content": "Quantum drive spool procedure for Anvil ships...",
+                "metadata": {"source": "sc_manual.pdf"},
             },
             {
-                "content": "Normal takeoff checklist...",
-                "metadata": {"source": "checklist.pdf"},
+                "content": "Shield management during combat...",
+                "metadata": {"source": "combat_guide.pdf"},
             },
         ]
-        prompt = claude_client._build_system_prompt(SimState(), docs)
+        prompt = claude_client._build_system_prompt(GameState(), docs)
         assert "RELEVANT REFERENCE MATERIAL" in prompt
-        assert "poh.pdf" in prompt
-        assert "Engine runup" in prompt
+        assert "sc_manual.pdf" in prompt
+        assert "Quantum drive spool" in prompt
 
     def test_prompt_limits_context_to_three_docs(
         self,
@@ -302,14 +299,14 @@ class TestSystemPromptBuilding:
             {"content": f"Doc {i}", "metadata": {"source": f"src{i}.pdf"}}
             for i in range(5)
         ]
-        prompt = claude_client._build_system_prompt(SimState(), docs)
+        prompt = claude_client._build_system_prompt(GameState(), docs)
         assert "src0.pdf" in prompt
         assert "src2.pdf" in prompt
         assert "src3.pdf" not in prompt
 
     def test_prompt_truncates_long_content(self, claude_client: ClaudeClient) -> None:
         docs = [{"content": "X" * 1000, "metadata": {"source": "big.pdf"}}]
-        prompt = claude_client._build_system_prompt(SimState(), docs)
+        prompt = claude_client._build_system_prompt(GameState(), docs)
         # Content should be truncated to 500 chars
         assert "X" * 500 in prompt
         assert "X" * 501 not in prompt
@@ -318,37 +315,10 @@ class TestSystemPromptBuilding:
         self,
         claude_client: ClaudeClient,
     ) -> None:
-        prompt = claude_client._build_system_prompt(SimState(), [])
+        prompt = claude_client._build_system_prompt(GameState(), [])
         assert "RESPONSE RULES" in prompt
-        assert "brevity saves lives" in prompt
+        assert "brevity" in prompt.lower()
         assert "STOP" in prompt
-
-    def test_prompt_includes_phase_style_for_approach(
-        self,
-        claude_client: ClaudeClient,
-    ) -> None:
-        state = SimState(flight_phase=FlightPhase.APPROACH)
-        prompt = claude_client._build_system_prompt(state, [])
-        assert "ULTRA-BRIEF" in prompt
-        assert "CURRENT RESPONSE STYLE" in prompt
-
-    def test_prompt_includes_phase_style_for_cruise(
-        self,
-        claude_client: ClaudeClient,
-    ) -> None:
-        state = SimState(flight_phase=FlightPhase.CRUISE)
-        prompt = claude_client._build_system_prompt(state, [])
-        assert "Conversational" in prompt
-        assert "teach" in prompt
-
-    def test_prompt_includes_phase_style_for_takeoff(
-        self,
-        claude_client: ClaudeClient,
-    ) -> None:
-        state = SimState(flight_phase=FlightPhase.TAKEOFF)
-        prompt = claude_client._build_system_prompt(state, [])
-        assert "ULTRA-BRIEF" in prompt
-        assert "Callouts only" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +432,7 @@ class TestToolExecution:
 
     @pytest.mark.asyncio
     async def test_execute_unknown_tool(self, claude_client: ClaudeClient) -> None:
-        result = await claude_client._execute_tool("nonexistent_tool", {}, SimState())
+        result = await claude_client._execute_tool("nonexistent_tool", {}, GameState())
         assert "error" in result
         assert "Unknown tool" in result["error"]
 
@@ -472,104 +442,105 @@ class TestToolExecution:
         claude_client: ClaudeClient,
     ) -> None:
         with patch(
-            "orchestrator.claude_client.get_sim_state",
-            side_effect=RuntimeError("sim offline"),
+            "orchestrator.claude_client.get_game_state",
+            side_effect=RuntimeError("game offline"),
         ):
             result = await claude_client._execute_tool(
-                "get_sim_state", {}, SimState()
+                "get_game_state", {}, GameState()
             )
             assert "error" in result
-            assert "sim offline" in result["error"]
+            assert "game offline" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_execute_get_sim_state(
+    async def test_execute_get_game_state(
         self,
         claude_client: ClaudeClient,
-        mock_sim_client: MagicMock,
+        mock_game_client: MagicMock,
     ) -> None:
-        mock_state = SimState(aircraft="Test Aircraft")
-        mock_sim_client.get_state = AsyncMock(return_value=mock_state)
+        mock_state = GameState(
+            activity=GameActivity.SHIP_FLIGHT,
+            ship=ShipStatus(name="Super Hornet"),
+        )
+        mock_game_client.get_state = AsyncMock(return_value=mock_state)
         with patch(
-            "orchestrator.claude_client.get_sim_state",
+            "orchestrator.claude_client.get_game_state",
             new_callable=AsyncMock,
-            return_value={"aircraft": "Test Aircraft"},
+            return_value={"activity": "SHIP_FLIGHT", "ship": {"name": "Super Hornet"}},
         ) as mock_fn:
             result = await claude_client._execute_tool(
-                "get_sim_state", {}, SimState()
+                "get_game_state", {}, GameState()
             )
             mock_fn.assert_awaited_once()
-            assert result["aircraft"] == "Test Aircraft"
+            assert result["activity"] == "SHIP_FLIGHT"
 
     @pytest.mark.asyncio
-    async def test_execute_lookup_airport(
+    async def test_execute_lookup_commodity(
         self,
         claude_client: ClaudeClient,
     ) -> None:
         with patch(
-            "orchestrator.claude_client.lookup_airport",
+            "orchestrator.claude_client.lookup_commodity",
             new_callable=AsyncMock,
-            return_value={"identifier": "KJFK"},
+            return_value={"commodity": "Laranite", "price": 2750},
         ) as mock_fn:
             result = await claude_client._execute_tool(
-                "lookup_airport", {"identifier": "KJFK"}, SimState()
+                "lookup_commodity", {"commodity": "Laranite"}, GameState()
             )
-            mock_fn.assert_awaited_once_with("KJFK")
-            assert result["identifier"] == "KJFK"
+            mock_fn.assert_awaited_once()
+            assert result["commodity"] == "Laranite"
 
     @pytest.mark.asyncio
-    async def test_execute_search_manual(
+    async def test_execute_search_knowledge(
         self,
         claude_client: ClaudeClient,
     ) -> None:
-        state = SimState(aircraft="Cessna 172")
+        state = GameState(ship=ShipStatus(name="Super Hornet"))
         with patch(
-            "orchestrator.claude_client.search_manual",
+            "orchestrator.claude_client.search_knowledge",
             new_callable=AsyncMock,
             return_value=[],
         ) as mock_fn:
             result = await claude_client._execute_tool(
-                "search_manual", {"query": "V-speeds"}, state
+                "search_knowledge", {"query": "shield management"}, state
             )
             mock_fn.assert_awaited_once()
             call_kwargs = mock_fn.call_args
-            assert call_kwargs[0][0] == "V-speeds"
-            assert call_kwargs[1]["aircraft_type"] == "Cessna 172"
+            assert call_kwargs[0][0] == "shield management"
 
     @pytest.mark.asyncio
-    async def test_execute_get_checklist(
+    async def test_execute_get_procedure(
         self,
         claude_client: ClaudeClient,
     ) -> None:
         with patch(
-            "orchestrator.claude_client.get_checklist",
+            "orchestrator.claude_client.get_procedure",
             new_callable=AsyncMock,
-            return_value={"phase": "PREFLIGHT"},
+            return_value={"activity": "COMBAT"},
         ) as mock_fn:
             result = await claude_client._execute_tool(
-                "get_checklist", {"phase": "PREFLIGHT"}, SimState()
+                "get_procedure", {"activity": "COMBAT"}, GameState()
             )
             mock_fn.assert_awaited_once()
-            assert result["phase"] == "PREFLIGHT"
+            assert result["activity"] == "COMBAT"
 
     @pytest.mark.asyncio
-    async def test_execute_create_flight_plan(
+    async def test_execute_plan_trade_route(
         self,
         claude_client: ClaudeClient,
     ) -> None:
         with patch(
-            "orchestrator.claude_client.create_flight_plan",
+            "orchestrator.claude_client.plan_trade_route",
             new_callable=AsyncMock,
-            return_value={"status": "draft"},
+            return_value={"status": "planned", "profit": 15000},
         ) as mock_fn:
             result = await claude_client._execute_tool(
-                "create_flight_plan",
+                "plan_trade_route",
                 {
-                    "departure": "KJFK",
-                    "destination": "KLAX",
-                    "altitude": 35000,
-                    "route": "J80",
+                    "origin": "Lorville",
+                    "destination": "New Babbage",
+                    "cargo_scu": 100,
                 },
-                SimState(),
+                GameState(),
             )
             mock_fn.assert_awaited_once()
-            assert result["status"] == "draft"
+            assert result["status"] == "planned"
