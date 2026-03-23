@@ -1,4 +1,4 @@
-"""Entry point for the MERLIN web server."""
+"""Entry point for the Super Hornet web server."""
 
 import uvicorn
 

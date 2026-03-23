@@ -1,11 +1,11 @@
-"""FastAPI backend for the MERLIN AI co-pilot web UI.
+"""FastAPI backend for the Super Hornet AI Wingman web UI.
 
-Bridges the browser frontend to the orchestrator components: SimConnect
-telemetry streaming, Claude chat with the MERLIN persona, Whisper STT,
+Bridges the browser frontend to the orchestrator components: game state
+telemetry streaming, Claude chat with the Super Hornet persona, Whisper STT,
 and ElevenLabs TTS.
 
 Supports barge-in interruption: if the user sends new audio or text while
-MERLIN is responding, the current Claude stream and TTS pipeline are
+Super Hornet is responding, the current Claude stream and TTS pipeline are
 cancelled immediately.
 """
 
@@ -35,9 +35,13 @@ from orchestrator.audio_processing import (
 from orchestrator.claude_client import ClaudeClient  # noqa: E402
 from orchestrator.config import load_settings  # noqa: E402
 from orchestrator.context_store import ContextStore  # noqa: E402
-from orchestrator.flight_phase import FlightPhaseDetector  # noqa: E402
-from orchestrator.sim_client import SimConnectClient, SimState  # noqa: E402
+from orchestrator.game_state import GameActivity, GameState  # noqa: E402
+from orchestrator.game_activity import GameActivityDetector  # noqa: E402
+from orchestrator.game_client import GameStateClient  # noqa: E402
+from orchestrator.log_parser import LogParserModule  # noqa: E402
+from orchestrator.skill_library import SkillLibrary  # noqa: E402
 from orchestrator.tts_preprocessor import preprocess_for_tts  # noqa: E402
+from orchestrator.uex_client import UEXClient  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -46,7 +50,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger("merlin.web")
+logger = logging.getLogger("hornet.web")
 
 # ---------------------------------------------------------------------------
 # Shared application state (initialised in lifespan)
@@ -56,18 +60,20 @@ logging.getLogger().setLevel(
     getattr(logging, settings.log_level.upper(), logging.INFO)
 )
 
-sim_client: SimConnectClient | None = None
+game_client: GameStateClient | None = None
 claude_client: ClaudeClient | None = None
 context_store: ContextStore | None = None
-phase_detector: FlightPhaseDetector | None = None
+activity_detector: GameActivityDetector | None = None
+uex_client: UEXClient | None = None
+skill_library: SkillLibrary | None = None
 
-# Track whether we have a live connection to the SimConnect bridge
-_sim_connected: bool = False
+# Track whether we have a live connection to the game state pipeline
+_game_connected: bool = False
 
 # Confidence threshold: transcriptions below this trigger a retry or warning
 _LOW_CONFIDENCE_THRESHOLD = 0.4
 
-# Brief pause (seconds) after MERLIN finishes speaking before accepting input
+# Brief pause (seconds) after Super Hornet finishes speaking before accepting input
 _POST_SPEECH_PAUSE_SECS = 0.3
 
 
@@ -98,22 +104,22 @@ async def _get_whisper_client() -> httpx.AsyncClient:
 
 
 # ---------------------------------------------------------------------------
-# TTS phrase cache -- pre-populated at startup for common MERLIN phrases
+# TTS phrase cache -- pre-populated at startup for common Super Hornet phrases
 # ---------------------------------------------------------------------------
 
 _TTS_CACHE: dict[str, bytes] = {}
 _CACHEABLE_PHRASES = [
-    "Roger.",
-    "Roger, Captain.",
-    "Copy that.",
-    "Standby.",
-    "Affirmative.",
-    "Negative.",
+    "Copy that, Commander.",
     "Understood.",
-    "Wilco.",
-    "Good copy.",
-    "Say again?",
+    "Scanning.",
+    "Quantum route calculated.",
+    "Hostile contact.",
+    "Shields holding.",
+    "Ready when you are.",
+    "Negative.",
+    "Standby.",
     "Checking.",
+    "Roger.",
 ]
 
 
@@ -160,50 +166,65 @@ async def _prepopulate_tts_cache() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global sim_client, claude_client, context_store, phase_detector
-    global _sim_connected
+    global game_client, claude_client, context_store, activity_detector
+    global uex_client, skill_library, _game_connected
 
-    logger.info("Starting MERLIN web server")
+    logger.info("Starting Super Hornet web server")
 
     # Context store (ChromaDB) -- degrades gracefully if unavailable
     context_store = ContextStore(chromadb_url=settings.chromadb_url)
 
-    # SimConnect client
-    sim_client = SimConnectClient(url=settings.simconnect_bridge_url)
+    # UEX Corp client for trade / economy data
+    uex_client = UEXClient(
+        base_url=settings.uex_api_base_url,
+        api_key=settings.uex_api_key,
+    )
+
+    # Skill library (ChromaDB-backed)
+    skill_library = SkillLibrary(chromadb_url=settings.chromadb_url)
+
+    # Game state client (log parser + no vision for now)
+    log_parser = (
+        LogParserModule(settings.sc_game_log_path)
+        if settings.sc_game_log_path
+        else None
+    )
+    game_client = GameStateClient(
+        log_parser=log_parser,
+        vision_module=None,  # Vision not yet wired up
+    )
     try:
-        await sim_client.connect()
-        _sim_connected = True
-        logger.info(
-            "SimConnect bridge connected at %s",
-            settings.simconnect_bridge_url,
-        )
+        await game_client.connect()
+        _game_connected = True
+        logger.info("Game state client connected")
     except Exception as exc:
-        _sim_connected = False
+        _game_connected = False
         logger.warning(
-            "SimConnect bridge unavailable at %s (%s); telemetry will be offline",
-            settings.simconnect_bridge_url,
+            "Game state client failed to start (%s); telemetry will be offline",
             exc,
         )
 
-    # Flight phase detector
-    phase_detector = FlightPhaseDetector()
+    # Activity detector
+    activity_detector = GameActivityDetector()
 
-    # Register the phase detector as a subscriber when connected
-    if _sim_connected and sim_client is not None:
+    # Register the activity detector as a subscriber when connected
+    if _game_connected and game_client is not None:
 
-        async def _on_state(state: SimState) -> None:
-            assert phase_detector is not None
-            detected = phase_detector.update(state)
-            state.flight_phase = detected
+        async def _on_state(state: GameState) -> None:
+            assert activity_detector is not None
+            detected = activity_detector.update(state)
+            state.activity = detected
 
-        sim_client.subscribe(_on_state)
+        game_client.subscribe(_on_state)
 
     # Claude client
     claude_client = ClaudeClient(
         api_key=settings.anthropic_api_key,
         model=settings.claude_model,
-        sim_client=sim_client,
+        game_client=game_client,
         context_store=context_store,
+        uex_client=uex_client,
+        skill_library=skill_library,
     )
 
     # Pre-populate TTS cache in the background (non-blocking)
@@ -214,13 +235,17 @@ async def lifespan(app: FastAPI):
         else None
     )
 
-    logger.info("MERLIN web server ready on port 3838")
+    logger.info("Super Hornet web server ready on port 3838")
     yield
 
     # Shutdown
-    logger.info("Shutting down MERLIN web server")
-    if _sim_connected and sim_client is not None:
-        await sim_client.disconnect()
+    logger.info("Shutting down Super Hornet web server")
+    if game_client is not None:
+        await game_client.disconnect()
+
+    # Close UEX client
+    if uex_client is not None:
+        await uex_client.close()
 
     # Close persistent HTTP clients
     if _tts_client and not _tts_client.is_closed:
@@ -234,9 +259,9 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="MERLIN AI Co-Pilot",
-    description="Web backend for the MERLIN flight simulator co-pilot",
-    version="1.1.0",
+    title="Super Hornet AI Wingman",
+    description="Web backend for the Super Hornet Star Citizen AI wingman",
+    version="0.1.0",
     lifespan=lifespan,
 )
 
@@ -274,7 +299,7 @@ async def index():
     index_path = _STATIC_DIR / "index.html"
     if index_path.exists():
         return FileResponse(str(index_path))
-    return {"message": "MERLIN web UI -- place index.html in web/static/"}
+    return {"message": "Super Hornet web UI -- place index.html in web/static/"}
 
 
 @app.get("/api/status")
@@ -291,11 +316,14 @@ async def get_status():
     chromadb_ok = context_store.available if context_store else False
 
     return {
-        "sim_connected": (
-            _sim_connected
-            and sim_client is not None
-            and sim_client.state.connected
+        "game_connected": (
+            _game_connected
+            and game_client is not None
+            and game_client.connection_state.value == "CONNECTED"
         ),
+        "game_log_path": settings.sc_game_log_path,
+        "vision_enabled": settings.vision_enabled,
+        "input_simulation_enabled": settings.input_simulation_enabled,
         "chromadb_available": chromadb_ok,
         "chromadb_documents": (
             context_store.document_count if context_store else 0
@@ -305,7 +333,6 @@ async def get_status():
             settings.elevenlabs_api_key and settings.voice_id
         ),
         "claude_model": settings.claude_model,
-        "simconnect_bridge_url": settings.simconnect_bridge_url,
     }
 
 
@@ -403,64 +430,78 @@ async def text_to_speech(request: TTSRequest):
 
 @app.websocket("/ws/telemetry")
 async def ws_telemetry(ws: WebSocket):
-    """Stream simulator telemetry to the browser.
+    """Stream game state telemetry to the browser.
 
-    Connects (or reconnects) to the SimConnect bridge on demand and
-    proxies telemetry as JSON. Falls back to polling if the bridge
-    subscriber model isn't active.
+    Subscribes to GameStateClient updates and forwards GameState snapshots
+    as JSON. Enriches each snapshot with the current detected activity.
     """
     await ws.accept()
     logger.info("Telemetry WebSocket client connected")
 
-    bridge_url = settings.simconnect_bridge_url
-
     try:
-        while True:
-            # Try to connect directly to the SimConnect bridge WebSocket
-            try:
-                async with ws_lib.connect(bridge_url) as bridge_ws:
-                    logger.info(
-                        "Telemetry proxy connected to bridge at %s",
-                        bridge_url,
-                    )
-                    # Bridge WS is open, but don't claim sim is connected
-                    # until we receive data with connected=true from the bridge
-                    await ws.send_json(
-                        {"type": "telemetry", "connected": False, "data": None}
-                    )
-
-                    async for raw_msg in bridge_ws:
-                        try:
-                            data = json.loads(raw_msg)
-                            # Use the bridge's SimConnect status, not WS status
-                            sim_active = data.get("connected", False)
-                            # Detect flight phase
-                            if phase_detector and "position" in data:
-                                try:
-                                    state = SimState.model_validate(data)
-                                    fp = phase_detector.update(state)
-                                    data["flight_phase"] = fp.value
-                                except Exception:
-                                    pass
-                            await ws.send_json({
-                                "type": "telemetry",
-                                "connected": sim_active,
-                                "data": data,
-                            })
-                        except json.JSONDecodeError:
-                            pass
-
-            except (ConnectionRefusedError, OSError, Exception) as exc:
-                logger.debug(
-                    "Bridge not available (%s), retrying in 3s", exc
-                )
+        if not _game_connected or game_client is None:
+            # Game client not connected -- send empty state and wait
+            while True:
                 await ws.send_json({
                     "type": "telemetry",
                     "connected": False,
-                    "flight_phase": "PREFLIGHT",
                     "data": None,
                 })
                 await asyncio.sleep(3.0)
+        else:
+            # Stream game state updates
+            state_queue: asyncio.Queue[GameState] = asyncio.Queue(maxsize=10)
+
+            async def _on_state_update(state: GameState) -> None:
+                try:
+                    state_queue.put_nowait(state)
+                except asyncio.QueueFull:
+                    # Drop oldest if browser can't keep up
+                    try:
+                        state_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+                    state_queue.put_nowait(state)
+
+            game_client.subscribe(_on_state_update)
+
+            # Send initial state immediately
+            current = game_client.state
+            if activity_detector:
+                current.activity = activity_detector.update(current)
+            await ws.send_json({
+                "type": "telemetry",
+                "connected": True,
+                "data": {
+                    "activity": current.activity.value,
+                    "ship": current.ship.model_dump(),
+                    "player": current.player.model_dump(),
+                    "combat": current.combat.model_dump(),
+                },
+            })
+
+            while True:
+                try:
+                    state = await asyncio.wait_for(
+                        state_queue.get(), timeout=5.0
+                    )
+                except asyncio.TimeoutError:
+                    # Send heartbeat with current state
+                    state = game_client.state
+
+                if activity_detector:
+                    state.activity = activity_detector.update(state)
+
+                await ws.send_json({
+                    "type": "telemetry",
+                    "connected": True,
+                    "data": {
+                        "activity": state.activity.value,
+                        "ship": state.ship.model_dump(),
+                        "player": state.player.model_dump(),
+                        "combat": state.combat.model_dump(),
+                    },
+                })
 
     except WebSocketDisconnect:
         logger.info("Telemetry WebSocket client disconnected")
@@ -475,7 +516,7 @@ async def ws_telemetry(ws: WebSocket):
 
 @app.websocket("/ws/chat")
 async def ws_chat(ws: WebSocket):
-    """Chat with MERLIN, with barge-in interruption support.
+    """Chat with Super Hornet, with barge-in interruption support.
 
     Receives JSON messages or binary audio data.
 
@@ -493,7 +534,7 @@ async def ws_chat(ws: WebSocket):
       {"type": "tts_audio", "size": N}        -- followed by binary MP3
       {"type": "interrupted"}                 -- response was cancelled
       {"type": "done"}                        -- end of response
-      {"type": "listening"}                   -- MERLIN is ready for input
+      {"type": "listening"}                   -- Super Hornet is ready for input
     """
     await ws.accept()
     logger.info("Chat WebSocket client connected")
@@ -581,7 +622,7 @@ async def ws_chat(ws: WebSocket):
                 # Handle audio_start marker (next message will be binary)
                 if msg.get("type") == "audio_start":
                     pending_audio_mime = msg.get("mime", "audio/webm")
-                    # Barge-in: if MERLIN is speaking and user starts recording
+                    # Barge-in: if Super Hornet is speaking and user starts recording
                     await _cancel_active_response()
                     continue
 
@@ -598,7 +639,7 @@ async def ws_chat(ws: WebSocket):
                     })
                     continue
 
-                # Barge-in: cancel if user sends text while MERLIN responding
+                # Barge-in: cancel if user sends text while Super Hornet responding
                 await _cancel_active_response()
 
             else:
@@ -809,16 +850,16 @@ async def _stream_response(
 
     try:
         assert claude_client is not None
-        # Pass current sim state so Claude has telemetry context
-        current_sim_state = None
-        if _sim_connected and sim_client is not None:
-            current_sim_state = sim_client.state
-            if phase_detector:
-                detected = phase_detector.update(current_sim_state)
-                current_sim_state.flight_phase = detected
+        # Pass current game state so Claude has context
+        current_game_state = None
+        if _game_connected and game_client is not None:
+            current_game_state = game_client.state
+            if activity_detector:
+                detected = activity_detector.update(current_game_state)
+                current_game_state.activity = detected
 
         async for chunk in claude_client.chat(
-            user_text, sim_state=current_sim_state
+            user_text, game_state=current_game_state
         ):
             if interrupt.is_set():
                 logger.info("Response interrupted mid-stream")
@@ -863,7 +904,7 @@ async def _stream_response(
     if not interrupt.is_set():
         await ws.send_json({"type": "done"})
 
-        # Brief pause after MERLIN finishes before signalling readiness
+        # Brief pause after Super Hornet finishes before signalling readiness
         await asyncio.sleep(_POST_SPEECH_PAUSE_SECS)
         await ws.send_json({"type": "listening"})
 
