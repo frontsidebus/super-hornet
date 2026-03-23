@@ -1,12 +1,15 @@
 """Regex patterns for Star Citizen game.log parsing.
 
-These patterns are calibrated for Star Citizen Alpha 4.x log format.
-The game.log uses a structured format with ISO-ish timestamps and
-bracket-delimited or key=value fields.
+Calibrated against Star Citizen Alpha 4.x log format (March 2026).
+The game.log uses this format:
+  <2026-03-23T14:15:20.030Z> [Level] <EventTag> message [Team][Category]
 
-NOTE: These are initial patterns based on commonly observed SC log structures.
-They will need calibration against real game.log output, as CIG frequently
-changes log formatting between patches.
+Where:
+  - Timestamp is ISO 8601 in angle brackets
+  - Level is Notice, Error, Warning, etc.
+  - EventTag is the specific event identifier in angle brackets
+  - Message body follows
+  - Team and Category tags in square brackets at the end
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-VERSION = "sc_alpha_4x"
+VERSION = "sc_alpha_4x_calibrated"
 
 
 class LogEventType(StrEnum):
@@ -28,181 +31,185 @@ class LogEventType(StrEnum):
     QUANTUM_TRAVEL_END = "quantum_travel_end"
     CRIME_STAT_CHANGE = "crime_stat_change"
     MISSION_UPDATE = "mission_update"
+    NOTIFICATION = "notification"
     ERROR = "error"
     DISCONNECT = "disconnect"
     UNKNOWN = "unknown"
 
 
-# Timestamp pattern found at the start of most SC game.log lines.
-# Format varies but commonly: <YYYY-MM-DDTHH:MM:SS.mmmZ> or similar ISO-style prefix.
+# ---------------------------------------------------------------------------
+# Timestamp extraction
+# ---------------------------------------------------------------------------
+
+# SC 4.x format: <2026-03-23T14:15:20.030Z>
 _TIMESTAMP_RE = re.compile(
-    r"^<?(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)>?\s+"
+    r"^<(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)>"
 )
 
-# Common alternate timestamp: angle-bracket delimited epoch or date string
-_TIMESTAMP_ALT_RE = re.compile(
-    r"^<(?P<timestamp>\d{4}\s\w{3}\s\d{2}\s\d{2}:\d{2}:\d{2})>"
-)
 
 # ---------------------------------------------------------------------------
-# Compiled regex patterns organized by event type.
-# Each pattern uses named groups so parsed data is self-describing.
-#
-# Star Citizen logs typically look like:
-#   <2025-01-15T03:22:10.123Z> [EntityKill] ...
-#   <2025-01-15T03:22:10.123Z> [ZoneSystem] Loading zone ...
-#   <2025-01-15T03:22:10.123Z> [QuantumDrive] Jump initiated ...
-#
-# CIG changes these between patches, so patterns should be treated as
-# best-effort and updated when log format changes are detected.
+# Log level extraction: [Notice], [Error], [Warning]
+# ---------------------------------------------------------------------------
+
+_LEVEL_RE = re.compile(r"\[(?P<level>Notice|Error|Warning|Fatal)\]")
+
+
+# ---------------------------------------------------------------------------
+# Location inference from object container paths
+# ---------------------------------------------------------------------------
+
+# Maps path fragments to (system, body, zone) tuples
+_LOCATION_HINTS: dict[str, tuple[str, str, str]] = {
+    "newbab": ("Stanton", "microTech", "New Babbage"),
+    "lorville": ("Stanton", "Hurston", "Lorville"),
+    "area18": ("Stanton", "ArcCorp", "Area18"),
+    "orison": ("Stanton", "Crusader", "Orison"),
+    "grimhex": ("Stanton", "Yela", "GrimHEX"),
+    "tressler": ("Stanton", "microTech", "Port Tressler"),
+    "everus": ("Stanton", "Hurston", "Everus Harbor"),
+    "baijini": ("Stanton", "ArcCorp", "Baijini Point"),
+    "portolisar": ("Stanton", "Crusader", "Port Olisar"),
+    "pyro_gate": ("Pyro", "", "Pyro Gateway"),
+    "ruin_station": ("Pyro", "", "Ruin Station"),
+}
+
+# Map OOC container names to (system, body)
+_OOC_BODIES: dict[str, tuple[str, str]] = {
+    "OOC_Stanton_1_Hurston": ("Stanton", "Hurston"),
+    "OOC_Stanton_1a_Ariel": ("Stanton", "Ariel"),
+    "OOC_Stanton_1b_Aberdeen": ("Stanton", "Aberdeen"),
+    "OOC_Stanton_1c_Magda": ("Stanton", "Magda"),
+    "OOC_Stanton_1d_Ita": ("Stanton", "Ita"),
+    "OOC_Stanton_2_Crusader": ("Stanton", "Crusader"),
+    "OOC_Stanton_2a_Cellin": ("Stanton", "Cellin"),
+    "OOC_Stanton_2b_Daymar": ("Stanton", "Daymar"),
+    "OOC_Stanton_2c_Yela": ("Stanton", "Yela"),
+    "OOC_Stanton_3_ArcCorp": ("Stanton", "ArcCorp"),
+    "OOC_Stanton_3a_Lyria": ("Stanton", "Lyria"),
+    "OOC_Stanton_3b_Wala": ("Stanton", "Wala"),
+    "OOC_Stanton_4_Microtech": ("Stanton", "microTech"),
+    "OOC_Stanton_4a_Calliope": ("Stanton", "Calliope"),
+    "OOC_Stanton_4b_Clio": ("Stanton", "Clio"),
+    "OOC_Stanton_4c_Euterpe": ("Stanton", "Euterpe"),
+}
+
+# Ship name patterns from entity references (MANUFACTURER_Model_ID)
+_SHIP_RE = re.compile(
+    r"(?:ANVL|AEGS|DRAK|RSI|ORIG|MISC|CNOU|CRUS|ARGO|GCAT|TMBL|ESPR|GATC|AOPA)"
+    r"_(?P<ship_model>[A-Za-z0-9_]+?)_\d+",
+)
+
+
+# ---------------------------------------------------------------------------
+# Event patterns — matched against the full line after timestamp
 # ---------------------------------------------------------------------------
 
 LOG_PATTERNS: dict[LogEventType, list[re.Pattern]] = {  # type: ignore[type-arg]
     LogEventType.PLAYER_KILL: [
-        # Pattern: [Kill] or [EntityKill] attacker killed victim with weapon in vehicle
+        # Kill/death tracking from combat log
         re.compile(
-            r"\[(?:Entity)?Kill\]\s+"
+            r"<(?:Kill|EntityKill|CombatLog)>\s+"
             r"(?P<attacker>[^\s]+)\s+killed\s+(?P<victim>[^\s]+)"
             r"(?:\s+with\s+(?P<weapon>[^\s]+))?"
             r"(?:\s+in\s+(?P<vehicle>[^\s]+))?",
             re.IGNORECASE,
         ),
-        # Pattern: key=value style kill event
-        re.compile(
-            r"\[Combat\]\s+"
-            r"Attacker=(?P<attacker>[^\s,;]+)[,;\s]+"
-            r"Victim=(?P<victim>[^\s,;]+)"
-            r"(?:[,;\s]+Weapon=(?P<weapon>[^\s,;]+))?"
-            r"(?:[,;\s]+Vehicle=(?P<vehicle>[^\s,;]+))?",
-            re.IGNORECASE,
-        ),
     ],
     LogEventType.PLAYER_DEATH: [
-        # Pattern: player death notification
         re.compile(
-            r"\[(?:Player)?Death\]\s+"
-            r"(?P<player>[^\s]+)\s+(?:died|was\s+killed)"
-            r"(?:\s+by\s+(?P<cause>[^\s]+))?",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"\[Actor\]\s+(?P<player>[^\s]+)\s+(?:destroyed|incapacitated)",
+            r"<(?:PlayerDeath|Death|Actor)>\s+"
+            r"(?P<player>[^\s]+)\s+(?:died|was\s+killed|incapacitated)"
+            r"(?:\s+(?:by|cause)[\s:=]+(?P<cause>[^\[]+))?",
             re.IGNORECASE,
         ),
     ],
     LogEventType.VEHICLE_DESTROYED: [
         re.compile(
-            r"\[Vehicle(?:Destruction)?\]\s+"
+            r"<(?:VehicleDestruction|EntityDestroy)>\s+"
             r"(?P<vehicle>[^\s]+)\s+(?:destroyed|exploded)"
-            r"(?:\s+owner=(?P<owner>[^\s,;]+))?"
-            r"(?:\s+by\s+(?P<attacker>[^\s]+))?",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"\[EntityDestroy\]\s+"
-            r"(?:Vehicle\s+)?(?P<vehicle>[^\s]+)\s+destroyed"
-            r"(?:\s+(?:attacker|by)=(?P<attacker>[^\s,;]+))?",
+            r"(?:\s+(?:by|attacker)[\s:=]+(?P<attacker>[^\[]+))?",
             re.IGNORECASE,
         ),
     ],
     LogEventType.LOCATION_CHANGE: [
-        # Pattern: zone loading / location change
+        # Object container loading with location hints (e.g., hangar_lrgtop_001_newbab)
         re.compile(
-            r"\[Zone(?:System)?\]\s+"
-            r"(?:Loading|Entering|Transition(?:ing)?\s+to)\s+"
-            r"(?:zone\s+)?(?P<zone>[^\s,;]+)"
-            r"(?:\s+(?:on|at|body)[\s=]+(?P<body>[^\s,;]+))?"
-            r"(?:\s+(?:system|in)[\s=]+(?P<system>[^\s,;]+))?",
+            r"<StatObjLoad[^>]*>\s+'data/objectcontainers/pu/loc/"
+            r"(?P<path>[^']+)'",
             re.IGNORECASE,
         ),
-        # Pattern: ObjectContainer / streaming location
+        # OOC planet/moon cell data
         re.compile(
-            r"\[ObjectContainer\]\s+"
-            r"(?:Loaded|Streaming)\s+(?P<zone>[^\s,;]+)"
-            r"(?:\s+parent=(?P<body>[^\s,;]+))?",
-            re.IGNORECASE,
+            r"name:\s+(?P<ooc_name>OOC_[A-Za-z0-9_]+)",
         ),
-        # Pattern: simple system/body/zone triplet
+        # Loading screen / zone transitions
         re.compile(
-            r"\[Location\]\s+"
-            r"System=(?P<system>[^\s,;]+)[,;\s]+"
-            r"Body=(?P<body>[^\s,;]+)[,;\s]+"
-            r"Zone=(?P<zone>[^\s,;]+)",
+            r"<(?:Zone|ZoneSystem|LoadingScreen)>\s+"
+            r"(?:Loading|Entering|Transition)\s+(?:to\s+)?(?P<zone>[^\[]+)",
             re.IGNORECASE,
         ),
     ],
     LogEventType.QUANTUM_TRAVEL_START: [
+        # QT route data and navigation
         re.compile(
-            r"\[Quantum(?:Drive)?\]\s+"
-            r"(?:Jump\s+)?(?:initiated|started|spooling|calibrating)"
-            r"(?:\s+(?:to|destination)[\s=]+(?P<destination>[^\s,;]+))?",
+            r"<(?:QuantumDrive|QT|ItemNavigation)>.*"
+            r"(?:Jump\s+initiated|Spooling|GetStarmapRouteSegmentData)"
+            r"(?:.*destination[\s=]+(?P<destination>[^\[\s,]+))?",
             re.IGNORECASE,
         ),
+        # Ship navigation reference (contains ship name)
         re.compile(
-            r"\[QT\]\s+(?:Begin|Start)"
-            r"(?:\s+dest=(?P<destination>[^\s,;]+))?",
-            re.IGNORECASE,
+            r"\[ItemNavigation\].*\|\s+(?:NOT\s+AUTH|AUTH)\s+\|\s+"
+            r"(?P<ship>[A-Z]{4}_[A-Za-z0-9_]+)\[",
         ),
     ],
     LogEventType.QUANTUM_TRAVEL_END: [
         re.compile(
-            r"\[Quantum(?:Drive)?\]\s+"
-            r"(?:Jump\s+)?(?:completed?|arrived|exited|dropped\s+out)"
-            r"(?:\s+(?:at|destination)[\s=]+(?P<destination>[^\s,;]+))?",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"\[QT\]\s+(?:End|Complete|Arrived)"
-            r"(?:\s+dest=(?P<destination>[^\s,;]+))?",
+            r"<(?:QuantumDrive|QT)>.*"
+            r"(?:Jump\s+complete|Arrived|Exited|Dropped)"
+            r"(?:.*(?:at|destination)[\s=]+(?P<destination>[^\[\s,]+))?",
             re.IGNORECASE,
         ),
     ],
     LogEventType.CRIME_STAT_CHANGE: [
         re.compile(
-            r"\[Crime(?:Stat)?\]\s+"
+            r"<(?:CrimeStat|Law|Infraction)>\s+"
             r"(?P<player>[^\s]+)\s+"
-            r"(?:crime\s+stat(?:us)?\s+)?(?:changed|updated|set)\s+"
-            r"(?:to\s+)?(?P<new_level>\d+)"
-            r"(?:\s+from\s+(?P<old_level>\d+))?",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"\[Law\]\s+"
-            r"CrimeStat\s+(?P<player>[^\s,;]+)\s+"
-            r"level=(?P<new_level>\d+)",
+            r"(?:crime\s*stat(?:us)?|level)\s*(?:changed|updated|set)\s*(?:to\s*)?"
+            r"(?P<new_level>\d+)",
             re.IGNORECASE,
         ),
     ],
     LogEventType.MISSION_UPDATE: [
+        # Mission notifications
         re.compile(
-            r"\[Mission(?:s|Manager)?\]\s+"
-            r"(?:Mission\s+)?(?P<mission_id>[^\s,;]+)\s+"
-            r"(?:status\s+)?(?:changed\s+to|updated|=)\s*(?P<status>[^\s,;]+)"
-            r"(?:\s+title=(?P<title>[^\n]+))?",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"\[Mission\]\s+"
+            r"<(?:Mission|MissionManager)>\s+"
             r"(?P<status>Accepted|Completed|Failed|Abandoned|Updated)"
-            r"\s+(?P<mission_id>[^\s,;]+)"
-            r"(?:\s+\"(?P<title>[^\"]+)\")?",
+            r"\s+(?P<mission_id>[^\s\[]+)",
             re.IGNORECASE,
         ),
     ],
-    LogEventType.ERROR: [
+    LogEventType.NOTIFICATION: [
+        # HUD notifications
         re.compile(
-            r"\[(?:Error|FATAL|CRITICAL|Exception)\]\s+(?P<message>.+)",
-            re.IGNORECASE,
+            r"<SHUDEvent_OnNotification>\s+Added\s+notification\s+"
+            r"\"(?P<message>[^\"]+)\"",
+        ),
+    ],
+    LogEventType.ERROR: [
+        # Errors with the SC format: [Error] <EventTag> message
+        re.compile(
+            r"\[Error\]\s+<(?P<tag>[^>]+)>\s+(?P<message>[^\[]+)",
         ),
         re.compile(
-            r"(?:^|\s)(?:ERROR|FATAL|EXCEPTION):\s+(?P<message>.+)",
+            r"\[Fatal\]\s+(?P<message>.+)",
             re.IGNORECASE,
         ),
     ],
     LogEventType.DISCONNECT: [
         re.compile(
-            r"\[(?:Network|Connection|Disconnect)\]\s+"
-            r"(?P<reason>(?:disconnected|lost\s+connection|timeout|kicked).+)",
+            r"<(?:Disconnect|NetworkError|ConnectionLost)>\s+"
+            r"(?P<reason>[^\[]+)",
             re.IGNORECASE,
         ),
         re.compile(
@@ -216,24 +223,18 @@ LOG_PATTERNS: dict[LogEventType, list[re.Pattern]] = {  # type: ignore[type-arg]
 def parse_timestamp(line: str) -> datetime | None:
     """Extract and parse the timestamp from a game.log line.
 
-    Tries the primary ISO-style format first, then falls back to
-    the alternate format. Returns None if no timestamp is found.
+    SC 4.x format: <2026-03-23T14:15:20.030Z>
     """
     match = _TIMESTAMP_RE.match(line)
-    if not match:
-        match = _TIMESTAMP_ALT_RE.match(line)
     if not match:
         return None
 
     raw_ts = match.group("timestamp")
-
-    # Try ISO format first (most common in SC 4.x)
     for fmt in (
         "%Y-%m-%dT%H:%M:%S.%fZ",
         "%Y-%m-%dT%H:%M:%SZ",
         "%Y-%m-%dT%H:%M:%S.%f",
         "%Y-%m-%dT%H:%M:%S",
-        "%Y %b %d %H:%M:%S",
     ):
         try:
             return datetime.strptime(raw_ts, fmt)
@@ -243,18 +244,63 @@ def parse_timestamp(line: str) -> datetime | None:
     return None
 
 
+def infer_location(line: str) -> tuple[str, str, str] | None:
+    """Try to infer (system, body, zone) from a log line.
+
+    Checks for:
+    1. Object container paths with location hints (e.g., newbab → New Babbage)
+    2. OOC planet/moon names (e.g., OOC_Stanton_4_Microtech)
+    """
+    line_lower = line.lower()
+
+    # Check location hints from object container paths
+    for hint, location in _LOCATION_HINTS.items():
+        if hint in line_lower:
+            return location
+
+    # Check OOC body names
+    for ooc_name, (system, body) in _OOC_BODIES.items():
+        if ooc_name in line:
+            return (system, body, "")
+
+    return None
+
+
+def extract_ship_name(line: str) -> str | None:
+    """Extract a ship model name from entity references.
+
+    E.g., 'ANVL_Asgard_9716674112388' → 'Asgard'
+    """
+    match = _SHIP_RE.search(line)
+    if match:
+        return match.group("ship_model").replace("_", " ")
+    return None
+
+
 def match_line(line: str) -> tuple[LogEventType, dict[str, Any]] | None:
     """Try all compiled patterns against a log line.
 
     Returns the first matching (event_type, captured_data) tuple,
-    or None if no pattern matches. Patterns are tried in definition
-    order, so more specific event types are checked before generic ones.
+    or None if no pattern matches.
     """
     for event_type, patterns in LOG_PATTERNS.items():
         for pattern in patterns:
             m = pattern.search(line)
             if m:
-                # Filter out None-valued groups for cleaner data
                 data = {k: v for k, v in m.groupdict().items() if v is not None}
+
+                # Enrich with location inference for location events
+                if event_type == LogEventType.LOCATION_CHANGE:
+                    loc = infer_location(line)
+                    if loc:
+                        data["system"] = loc[0]
+                        data["body"] = loc[1]
+                        data["zone"] = loc[2]
+
+                # Extract ship name if present
+                ship = extract_ship_name(line)
+                if ship:
+                    data["ship"] = ship
+
                 return event_type, data
     return None
