@@ -1142,3 +1142,65 @@ html, body {
   0%   { color: #fff; text-shadow: 0 0 10px var(--cyan-glow), 0 0 20px var(--cyan-glow); }
   100% { color: var(--cyan); text-shadow: 0 0 4px rgba(78, 205, 196, 0.15); }
 }
+
+/* ── OVERLAY MODE ────────────────────────────────────── */
+
+body.overlay-mode {
+  background: transparent !important;
+}
+
+body.overlay-mode #scanlines,
+body.overlay-mode #vignette {
+  display: none;
+}
+
+body.overlay-mode #app {
+  background: transparent;
+}
+
+body.overlay-mode #header {
+  background: rgba(12, 22, 38, 0.80);
+}
+
+body.overlay-mode .terminal-panel {
+  background: rgba(8, 16, 28, 0.75);
+}
+
+body.overlay-mode .terminal-content {
+  background-image: none;
+}
+
+body.overlay-mode #footer {
+  background: rgba(8, 16, 28, 0.75);
+}
+
+body.overlay-mode .chat-input-row {
+  background: rgba(12, 22, 38, 0.85);
+}
+
+/* Overlay status indicator */
+.overlay-indicator {
+  position: fixed;
+  top: var(--space-xs);
+  right: var(--space-xs);
+  z-index: 10001;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--primary);
+  opacity: 0.5;
+  pointer-events: none;
+  display: none;
+}
+
+body.overlay-mode .overlay-indicator {
+  display: block;
+}
+
+.overlay-indicator.click-through {
+  color: var(--green);
+}
+
+.overlay-indicator.interactive {
+  color: var(--primary);
+}

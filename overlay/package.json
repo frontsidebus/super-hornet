@@ -1,0 +1,13 @@
+{
+  "name": "super-hornet-overlay",
+  "version": "0.1.0",
+  "description": "Super Hornet transparent overlay for Star Citizen",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0"
+  }
+}
