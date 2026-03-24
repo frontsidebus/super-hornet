@@ -655,6 +655,8 @@
       case 'done':
         // Server signals end of Claude response
         finishStreamingMessage();
+        // Flush any buffered audio chunks so they play immediately
+        flushAudioChunks();
         // Stay in speaking mode if TTS is still playing, otherwise idle
         if (!state.isPlayingAudio && state.audioQueue.length === 0) {
           setVoiceMode('idle');
@@ -673,6 +675,7 @@
 
       case 'stream_end':
         finishStreamingMessage();
+        flushAudioChunks();
         if (!state.isPlayingAudio && state.audioQueue.length === 0) {
           setVoiceMode('idle');
         }
@@ -710,6 +713,9 @@
         // Server confirms the active response was cancelled (barge-in)
         finishStreamingMessage();
         removeThinkingIndicator();
+        // Clear any pending audio on interrupt
+        _pendingChunks = [];
+        if (_chunkMergeTimer) { clearTimeout(_chunkMergeTimer); _chunkMergeTimer = null; }
         break;
 
       case 'error':
@@ -1415,13 +1421,13 @@
     if (!_playbackCtx || _playbackCtx.state === 'closed') {
       _playbackCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-      // Dynamics compressor to even out volume spikes within each clip
+      // Gentle compressor — avoid aggressive settings that amplify MP3 boundary artifacts
       _compressor = _playbackCtx.createDynamicsCompressor();
-      _compressor.threshold.value = -20;  // dB — compress above this
-      _compressor.knee.value = 12;        // dB — soft knee for natural sound
-      _compressor.ratio.value = 6;        // 6:1 compression — aggressive for speech
-      _compressor.attack.value = 0.003;   // 3ms — fast attack catches transients
-      _compressor.release.value = 0.15;   // 150ms — smooth release
+      _compressor.threshold.value = -12;  // dB — only compress loud peaks
+      _compressor.knee.value = 20;        // dB — wide soft knee for smooth response
+      _compressor.ratio.value = 3;        // 3:1 — gentle compression
+      _compressor.attack.value = 0.010;   // 10ms — slower attack avoids crackling on transients
+      _compressor.release.value = 0.25;   // 250ms — smooth release
 
       // Master volume controlled by slider
       _playbackGain = _playbackCtx.createGain();
@@ -1463,9 +1469,41 @@
     return Math.sqrt(sumSq / (count || 1));
   }
 
+  // Accumulate small MP3 chunks before decoding to avoid boundary artifacts.
+  // Each tiny MP3 fragment has codec padding that causes pops when decoded
+  // and played individually. Merging into larger blobs eliminates this.
+  const _CHUNK_MERGE_DELAY_MS = 150;  // Wait this long for more chunks before playing
+  let _chunkMergeTimer = null;
+  let _pendingChunks = [];
+
   function queueAudioBlob(blob) {
-    state.audioQueue.push(blob);
-    if (!state.isPlayingAudio) playNextAudio();
+    _pendingChunks.push(blob);
+
+    // Debounce: wait for more chunks to arrive, then merge and play
+    if (_chunkMergeTimer) clearTimeout(_chunkMergeTimer);
+    _chunkMergeTimer = setTimeout(() => {
+      _chunkMergeTimer = null;
+      if (_pendingChunks.length > 0) {
+        const merged = new Blob(_pendingChunks, { type: 'audio/mpeg' });
+        _pendingChunks = [];
+        state.audioQueue.push(merged);
+        if (!state.isPlayingAudio) playNextAudio();
+      }
+    }, _CHUNK_MERGE_DELAY_MS);
+  }
+
+  // Force-flush any pending chunks (called when response ends)
+  function flushAudioChunks() {
+    if (_chunkMergeTimer) {
+      clearTimeout(_chunkMergeTimer);
+      _chunkMergeTimer = null;
+    }
+    if (_pendingChunks.length > 0) {
+      const merged = new Blob(_pendingChunks, { type: 'audio/mpeg' });
+      _pendingChunks = [];
+      state.audioQueue.push(merged);
+      if (!state.isPlayingAudio) playNextAudio();
+    }
   }
 
   async function playNextAudio() {
@@ -1489,8 +1527,8 @@
       // Measure RMS of active (non-silent) audio and compute gain
       const rms = measureActiveRMS(audioBuffer);
       const gain = rms > 0.005 ? TARGET_RMS / rms : 1.0;
-      // Tight clamp: 0.7x-2.5x — keeps volume within a narrow band
-      const clampedGain = Math.min(Math.max(gain, 0.7), 2.5);
+      // Gentle clamp to avoid amplifying noise
+      const clampedGain = Math.min(Math.max(gain, 0.8), 2.0);
 
       // Update the master volume from slider
       _playbackGain.gain.value = state.ttsVolume;
