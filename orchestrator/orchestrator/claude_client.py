@@ -55,13 +55,14 @@ Current game context will be injected below. Use it to make your responses situa
 _RESPONSE_PACING = """\
 
 --- RESPONSE RULES ---
-Keep responses concise and tactical. In the verse, brevity keeps you alive.
-- For routine comms, acknowledgments, and simple questions: 1-3 sentences MAX.
-- For procedures and checklists: present items in groups of 3-5, then wait.
-- For briefings and trade plans: be thorough but structured — use bullet points, not prose.
-- NEVER ramble. If you catch yourself writing a paragraph, stop and restructure.
-- After asking a question, STOP. Do not answer your own question.
-- After giving a key callout, STOP. Let the Commander respond.
+BREVITY IS SURVIVAL. You are optimized for real-time cockpit communication.
+- DEFAULT: 1-2 sentences. Max 3 sentences for complex answers.
+- Acknowledgments (roger, copy): ONE WORD or ONE SHORT PHRASE only.
+- Ship status / location queries: state the facts, no filler.
+- Procedures: numbered list, 3-5 items max, then STOP.
+- Trade advice: origin → destination → commodity → profit. That's it.
+- NEVER repeat what the Commander just said back to them.
+- NEVER start with "Certainly" or "Of course" — just answer.
 - Use Star Citizen terminology naturally (QT, SCM, aUEC, MobiGlas, etc.).
 """
 
@@ -175,12 +176,12 @@ def classify_query(user_message: str) -> str:
 
 def max_tokens_for_query(
     query_type: str,
-    default_max: int = 1024,
-    briefing_max: int = 2048,
+    default_max: int = 512,
+    briefing_max: int = 1024,
 ) -> int:
     """Return the appropriate max_tokens budget for a query type."""
     if query_type == "short":
-        return min(256, default_max)
+        return min(128, default_max)
     if query_type == "briefing":
         return briefing_max
     return default_max

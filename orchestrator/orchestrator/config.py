@@ -24,12 +24,12 @@ class Settings(BaseSettings):
 
     # --- Claude --------------------------------------------------------------
     claude_model: str = Field(
-        default="claude-sonnet-4-20250514",
-        description="Claude model identifier",
+        default="claude-haiku-4-5-20251001",
+        description="Claude model identifier (haiku for speed, sonnet for quality)",
     )
     claude_max_tokens: int = Field(
-        default=1024,
-        description="Default max tokens for Claude responses",
+        default=512,
+        description="Default max tokens for Claude responses (keep tactical)",
     )
     claude_max_tokens_briefing: int = Field(
         default=2048,
@@ -92,8 +92,8 @@ class Settings(BaseSettings):
 
     # --- ElevenLabs TTS ------------------------------------------------------
     elevenlabs_model_id: str = Field(
-        default="eleven_multilingual_v2",
-        description="ElevenLabs model ID for TTS synthesis",
+        default="eleven_flash_v2_5",
+        description="ElevenLabs model ID for TTS (flash_v2_5 for low latency)",
     )
     elevenlabs_voice_id: str = Field(
         default="",
