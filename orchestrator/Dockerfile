@@ -1,5 +1,5 @@
-# MERLIN Orchestrator - Multi-stage Dockerfile
-# Builds the Python orchestration layer that coordinates all MERLIN services.
+# Super Hornet Orchestrator - Multi-stage Dockerfile
+# Builds the Python orchestration layer that coordinates all Super Hornet services.
 
 # =============================================================================
 # Stage 1: Build - install Python dependencies
@@ -41,8 +41,8 @@ COPY --from=build /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Create non-root user for security
-RUN groupadd --gid 1000 merlin \
-    && useradd --uid 1000 --gid merlin --create-home merlin
+RUN groupadd --gid 1000 hornet \
+    && useradd --uid 1000 --gid hornet --create-home hornet
 
 WORKDIR /app
 
@@ -51,9 +51,9 @@ COPY orchestrator/ ./orchestrator/
 COPY pyproject.toml .
 
 # Ensure the app directory is owned by our non-root user
-RUN chown -R merlin:merlin /app
+RUN chown -R hornet:hornet /app
 
-USER merlin
+USER hornet
 
 EXPOSE 3838
 

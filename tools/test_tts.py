@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test ElevenLabs TTS — verifies MERLIN can talk.
+"""Test ElevenLabs TTS — verifies Super Hornet can talk.
 
 Usage:
     # List available voices:
@@ -8,7 +8,7 @@ Usage:
     # Test TTS with a specific voice:
     python tools/test_tts.py --voice-id <ID> --text "Good afternoon, Captain."
 
-    # Test with MERLIN's default intro:
+    # Test with Super Hornet's default intro:
     python tools/test_tts.py --voice-id <ID>
 
 Requires: ELEVENLABS_API_KEY in .env or environment.
@@ -25,9 +25,9 @@ import httpx
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "orchestrator"))
 
 
-MERLIN_INTRO = (
-    "Good afternoon, Captain. This is MERLIN, your first officer. "
-    "Systems are nominal, weather looks cooperative, and I've already "
+HORNET_INTRO = (
+    "Good afternoon, Captain. This is Hornet, your AI wingman. "
+    "Systems are nominal, scanners are clear, and I've already "
     "reviewed the departure procedures. Whenever you're ready to fly, "
     "I'm ready to keep you out of trouble. Mostly."
 )
@@ -119,10 +119,10 @@ async def test_tts(api_key: str, voice_id: str, text: str, save_path: str | None
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Test ElevenLabs TTS for MERLIN")
+    parser = argparse.ArgumentParser(description="Test ElevenLabs TTS for Super Hornet")
     parser.add_argument("--list-voices", action="store_true", help="List available voices")
     parser.add_argument("--voice-id", type=str, help="ElevenLabs voice ID")
-    parser.add_argument("--text", type=str, default=MERLIN_INTRO, help="Text to speak")
+    parser.add_argument("--text", type=str, default=HORNET_INTRO, help="Text to speak")
     parser.add_argument("--save", type=str, default=None, help="Save MP3 to file path")
     parser.add_argument("--api-key", type=str, default=None, help="ElevenLabs API key (or set ELEVENLABS_API_KEY)")
     args = parser.parse_args()

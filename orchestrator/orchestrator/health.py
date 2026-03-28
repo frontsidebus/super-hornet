@@ -1,7 +1,7 @@
 """Health monitoring infrastructure for subsystem tracking.
 
-Extracted from sim_client.py -- these classes are game-agnostic and
-reusable across any orchestrator configuration.
+These classes are game-agnostic and reusable across any orchestrator
+configuration.
 """
 
 from __future__ import annotations

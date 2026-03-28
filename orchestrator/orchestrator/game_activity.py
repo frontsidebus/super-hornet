@@ -1,4 +1,4 @@
-"""Game activity detection for Star Citizen -- replaces MERLIN's FlightPhaseDetector.
+"""Game activity detection for Star Citizen.
 
 Evaluates the composite GameState to determine what the player is currently
 doing. Uses a hysteresis pattern (consecutive-detection gating) to prevent
@@ -50,10 +50,9 @@ class ActivityThresholds:
 class GameActivityDetector:
     """Analyzes GameState to determine the current player activity.
 
-    Mirrors MERLIN's FlightPhaseDetector architecture: a raw detection
-    function proposes a candidate activity, and a hysteresis gate ensures
-    the candidate is seen N consecutive times before the confirmed activity
-    changes.  This prevents flicker from noisy vision / log data.
+    A raw detection function proposes a candidate activity, and a hysteresis
+    gate ensures the candidate is seen N consecutive times before the confirmed
+    activity changes.  This prevents flicker from noisy vision / log data.
     """
 
     def __init__(self, thresholds: ActivityThresholds | None = None) -> None:

@@ -1,6 +1,5 @@
 """Star Citizen game state models for the Super Hornet AI agent.
 
-Replaces the MSFS-specific SimState models with Star Citizen equivalents.
 State is composed from multiple unreliable sources (log parsing, vision,
 external APIs), so fields carry implicit best-effort semantics.
 """
@@ -88,12 +87,11 @@ class CombatState(BaseModel):
 
 
 class GameState(BaseModel):
-    """Complete game state snapshot -- replaces SimState.
+    """Complete game state snapshot.
 
-    Unlike MERLIN's SimState which receives structured telemetry from
-    SimConnect at 20Hz, GameState is composed from multiple unreliable
-    sources (log parsing, vision inference, API calls). Every field
-    should be treated as best-effort.
+    GameState is composed from multiple unreliable sources (log parsing,
+    vision inference, API calls). Every field should be treated as
+    best-effort.
     """
 
     timestamp: str = ""

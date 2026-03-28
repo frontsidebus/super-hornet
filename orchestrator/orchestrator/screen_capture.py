@@ -1,4 +1,4 @@
-"""Optional screen capture module for MSFS window analysis via Claude vision."""
+"""Optional screen capture module for game window analysis via Claude vision."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class CaptureManager:
-    """Captures the MSFS window at a configurable frame rate.
+    """Captures the game window at a configurable frame rate.
 
     Runs a background loop that grabs screenshots and keeps the latest
     frame available for on-demand retrieval. Resizes captures to 720p
@@ -104,7 +104,7 @@ class CaptureManager:
             from PIL import Image
 
             with mss.mss() as sct:
-                # Grab the primary monitor (or find MSFS window specifically)
+                # Grab the primary monitor (or find game window specifically)
                 monitor = sct.monitors[1]  # Primary monitor
                 screenshot = sct.grab(monitor)
 
