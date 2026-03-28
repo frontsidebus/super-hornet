@@ -388,16 +388,16 @@
 
     const msg = document.createElement('div');
     const isHornet = sender === 'HORNET';
-    msg.className = `chat-msg ${isHornet ? 'merlin-msg' : sender === 'SYSTEM' ? 'system-msg' : 'captain-msg'}`;
+    msg.className = `chat-msg ${isHornet ? 'hornet-msg' : sender === 'SYSTEM' ? 'system-msg' : 'captain-msg'}`;
 
     if (sender === 'SYSTEM') {
       msg.textContent = text;
     } else {
       const ts = `<span class="timestamp">[${timestamp()}]</span> `;
       const senderSpan = isHornet
-        ? `<span class="sender-merlin">HORNET:</span> `
+        ? `<span class="sender-hornet">HORNET:</span> `
         : `<span class="sender-captain">CMDR:</span> `;
-      const textClass = isHornet ? 'msg-text-merlin' : 'msg-text-captain';
+      const textClass = isHornet ? 'msg-text-hornet' : 'msg-text-captain';
       const textSpan = `<span class="${textClass}">${escapeHtml(text)}</span>`;
       msg.innerHTML = ts + senderSpan + textSpan;
     }
@@ -416,10 +416,10 @@
   function showThinkingIndicator() {
     removeThinkingIndicator();
     const msg = document.createElement('div');
-    msg.className = 'chat-msg merlin-msg thinking-indicator';
+    msg.className = 'chat-msg hornet-msg thinking-indicator';
     const ts = `<span class="timestamp">[${timestamp()}]</span> `;
-    const sender = `<span class="sender-merlin">HORNET:</span> `;
-    msg.innerHTML = ts + sender + `<span class="msg-text-merlin thinking-dots">thinking</span>`;
+    const sender = `<span class="sender-hornet">HORNET:</span> `;
+    msg.innerHTML = ts + sender + `<span class="msg-text-hornet thinking-dots">thinking</span>`;
     if (dom.chatMessages) dom.chatMessages.appendChild(msg);
     state.thinkingMsgEl = msg;
     scrollChatIfNeeded();
@@ -437,10 +437,10 @@
   function startStreamingMessage() {
     removeThinkingIndicator();
     const msg = document.createElement('div');
-    msg.className = 'chat-msg merlin-msg';
+    msg.className = 'chat-msg hornet-msg';
     const ts = `<span class="timestamp">[${timestamp()}]</span> `;
-    const sender = `<span class="sender-merlin">HORNET:</span> `;
-    msg.innerHTML = ts + sender + `<span class="msg-text-merlin" data-streaming></span><span class="typing-cursor"></span>`;
+    const sender = `<span class="sender-hornet">HORNET:</span> `;
+    msg.innerHTML = ts + sender + `<span class="msg-text-hornet" data-streaming></span><span class="typing-cursor"></span>`;
     if (dom.chatMessages) dom.chatMessages.appendChild(msg);
     state.streamingMsgEl = msg;
     state.streamingText = '';

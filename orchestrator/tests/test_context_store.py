@@ -332,9 +332,10 @@ class TestActivityTopics:
 
 
 class TestDocumentCount:
-    """Test the document_count property."""
+    """Test the document_count async method."""
 
-    def test_document_count(self, mock_chromadb_collection: MagicMock) -> None:
+    @pytest.mark.asyncio
+    async def test_document_count(self, mock_chromadb_collection: MagicMock) -> None:
         with patch("orchestrator.context_store.chromadb.HttpClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.heartbeat.return_value = 1
@@ -342,4 +343,4 @@ class TestDocumentCount:
             mock_client_cls.return_value = mock_client
 
             store = ContextStore(chromadb_url="http://localhost:8000")
-            assert store.document_count == 10
+            assert await store.document_count() == 10

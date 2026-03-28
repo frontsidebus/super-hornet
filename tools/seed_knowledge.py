@@ -57,7 +57,7 @@ SHIPS = [
         "RSI Constellation Andromeda: The Constellation Andromeda is a multi-crew "
         "ship with serious firepower. It mounts 4xS4 gimballed weapons on the "
         "pilot hardpoints, plus a manned turret, and carries a large missile "
-        "payload. It also docks a Merlin snub fighter for additional support. "
+        "payload. It also docks a P-52 snub fighter for additional support. "
         "The Andromeda offers 96 SCU of cargo space, making it viable for trade "
         "runs as well as combat operations."
     ),

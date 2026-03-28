@@ -1,13 +1,11 @@
 """Game state client that aggregates data from perception modules.
 
-Replaces SimConnectClient. Instead of a WebSocket connection to a
-SimConnect bridge, this composes state from:
+Composes state from:
 - LogParserModule (game.log events)
 - VisionModule (screen capture + Claude Vision)
 - API clients (UEX, Wiki -- for enrichment, not real-time)
 
-Maintains the same subscription/callback pattern as SimConnectClient
-for backward compatibility with the Orchestrator.
+Uses a subscription/callback pattern for integration with the Orchestrator.
 """
 
 from __future__ import annotations
@@ -116,6 +114,10 @@ class GameStateClient:
     async def get_state(self) -> GameState:
         """Return the current aggregated game state."""
         return self._state
+
+    async def get_ship_status(self) -> dict[str, Any]:
+        """Return detailed ship status including components and loadout."""
+        return self._state.ship.model_dump()
 
     def subscribe(self, callback: StateCallback) -> None:
         """Register a callback for state updates."""

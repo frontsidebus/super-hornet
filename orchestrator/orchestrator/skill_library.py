@@ -8,9 +8,11 @@ rates and supports fuzzy search by natural-language description.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from functools import partial
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -121,13 +123,13 @@ class SkillLibrary:
         """Whether the ChromaDB connection succeeded."""
         return self._collection is not None
 
-    @property
-    def skill_count(self) -> int:
+    async def skill_count(self) -> int:
         """Number of skills stored in the library."""
         if not self.available:
             return 0
         try:
-            return self._collection.count()  # type: ignore[union-attr]
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, self._collection.count)  # type: ignore[union-attr]
         except Exception:
             logger.warning("Failed to query skill count", exc_info=True)
             return 0
@@ -146,10 +148,15 @@ class SkillLibrary:
             skill.created_at = _now_iso()
 
         try:
-            self._collection.upsert(  # type: ignore[union-attr]
-                ids=[skill.name],
-                documents=[skill.description],
-                metadatas=[{"skill_json": skill.model_dump_json()}],
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                partial(
+                    self._collection.upsert,  # type: ignore[union-attr]
+                    ids=[skill.name],
+                    documents=[skill.description],
+                    metadatas=[{"skill_json": skill.model_dump_json()}],
+                ),
             )
             logger.info("Stored skill %r", skill.name)
         except Exception:
@@ -165,9 +172,14 @@ class SkillLibrary:
             return []
 
         try:
-            results = self._collection.query(  # type: ignore[union-attr]
-                query_texts=[query],
-                n_results=n_results,
+            loop = asyncio.get_running_loop()
+            results = await loop.run_in_executor(
+                None,
+                partial(
+                    self._collection.query,  # type: ignore[union-attr]
+                    query_texts=[query],
+                    n_results=n_results,
+                ),
             )
             return _parse_results(results)
         except Exception:
@@ -182,7 +194,11 @@ class SkillLibrary:
             return None
 
         try:
-            result = self._collection.get(ids=[name])  # type: ignore[union-attr]
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None,
+                partial(self._collection.get, ids=[name]),  # type: ignore[union-attr]
+            )
             skills = _parse_results(result)
             return skills[0] if skills else None
         except Exception:
@@ -218,8 +234,13 @@ class SkillLibrary:
             return []
 
         try:
-            results = self._collection.get(  # type: ignore[union-attr]
-                where={"skill_json": {"$ne": ""}},
+            loop = asyncio.get_running_loop()
+            results = await loop.run_in_executor(
+                None,
+                partial(
+                    self._collection.get,  # type: ignore[union-attr]
+                    where={"skill_json": {"$ne": ""}},
+                ),
             )
             skills = _parse_results(results)
             return [s for s in skills if s.verified]

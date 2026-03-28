@@ -347,7 +347,7 @@ async def get_status():
         "input_simulation_enabled": settings.input_simulation_enabled,
         "chromadb_available": chromadb_ok,
         "chromadb_documents": (
-            context_store.document_count if context_store else 0
+            await context_store.document_count() if context_store else 0
         ),
         "whisper_available": whisper_ok,
         "elevenlabs_configured": bool(

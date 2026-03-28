@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Document Ingestion CLI for MERLIN Context Store.
+Document Ingestion CLI for Super Hornet Context Store.
 
-Ingests flight manuals, POHs, the MSFS game manual, and other reference
-documents into ChromaDB for retrieval-augmented generation.
+Ingests ship manuals, game guides, and other reference documents into
+ChromaDB for retrieval-augmented generation.
 
 Usage:
-    python ingest.py --file path/to/manual.pdf --type poh --aircraft "Cessna 172"
-    python ingest.py --file path/to/msfs_manual.md --type game_manual
-    python ingest.py --dir path/to/docs/ --type faa_reference
+    python ingest.py --file path/to/manual.pdf --type poh --aircraft "Super Hornet"
+    python ingest.py --file path/to/sc_manual.md --type game_manual
+    python ingest.py --dir path/to/docs/ --type reference
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-log = logging.getLogger("merlin.ingest")
+log = logging.getLogger("hornet.ingest")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -52,7 +52,7 @@ DEFAULT_CHROMA_PATH: str = os.path.join(
     "data",
     "chroma_db",
 )
-COLLECTION_NAME: str = "merlin_docs"
+COLLECTION_NAME: str = "hornet_docs"
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +292,7 @@ def chunk_document(
 def get_collection(
     chroma_path: str,
 ) -> chromadb.Collection:
-    """Return (or create) the MERLIN documents collection."""
+    """Return (or create) the Hornet documents collection."""
     Path(chroma_path).mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(
         path=chroma_path,
@@ -396,7 +396,7 @@ def ingest_directory(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ingest",
-        description="Ingest flight manuals and reference documents into the MERLIN context store.",
+        description="Ingest documents into the Super Hornet context store.",
     )
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument(

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -170,12 +172,13 @@ class ContextStore:
     def available(self) -> bool:
         return self._available
 
-    @property
-    def document_count(self) -> int:
+    async def document_count(self) -> int:
+        """Number of documents in the store."""
         if not self._available or self._collection is None:
             return 0
         try:
-            return self._collection.count()
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, self._collection.count)
         except Exception:
             return 0
 
@@ -214,7 +217,16 @@ class ContextStore:
             documents.append(chunk)
             metadatas.append({**base_meta, "chunk_index": i})
 
-        self._collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            partial(
+                self._collection.upsert,
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+            ),
+        )
         logger.info("Ingested %d chunks from %s", len(chunks), path.name)
         return len(chunks)
 
@@ -240,10 +252,15 @@ class ContextStore:
 
         try:
             where = filters if filters else None
-            results = self._collection.query(
-                query_texts=[text],
-                n_results=n_results,
-                where=where,
+            loop = asyncio.get_running_loop()
+            results = await loop.run_in_executor(
+                None,
+                partial(
+                    self._collection.query,
+                    query_texts=[text],
+                    n_results=n_results,
+                    where=where,
+                ),
             )
 
             docs: list[dict[str, Any]] = []

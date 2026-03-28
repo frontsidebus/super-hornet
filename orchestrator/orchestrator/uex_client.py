@@ -193,3 +193,35 @@ class UEXClient:
         if isinstance(data, list):
             return data
         return data.get("data", []) if isinstance(data, dict) else []
+
+    async def lookup_commodity(
+        self, commodity: str, location: str = ""
+    ) -> dict[str, Any]:
+        """Look up a commodity by name, returning info and prices."""
+        # Try direct code lookup first
+        prices = await self.get_commodity_prices(commodity, location=location)
+        if prices:
+            return {"commodity": commodity, "prices": prices, "location": location or "all"}
+
+        # Fall back to listing all commodities and fuzzy matching
+        all_commodities = await self.get_commodities()
+        match = None
+        commodity_lower = commodity.lower()
+        for c in all_commodities:
+            name = c.get("name", "")
+            code = c.get("code", "")
+            if name.lower() == commodity_lower or code.lower() == commodity_lower:
+                match = c
+                break
+        if match is None:
+            return {"error": f"Commodity '{commodity}' not found"}
+
+        code = match.get("code", commodity)
+        prices = await self.get_commodity_prices(code, location=location)
+        return {"commodity": match, "prices": prices, "location": location or "all"}
+
+    async def plan_trade_route(
+        self, origin: str, destination: str, cargo_scu: int = 100
+    ) -> dict[str, Any]:
+        """Plan a trade route between two locations."""
+        return await self.get_best_trade_route(origin, destination, cargo_scu)

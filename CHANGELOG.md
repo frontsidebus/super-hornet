@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.0] - 2026-03-21
 
 ### Added
-- Real-time SimConnect telemetry via event-driven bridge with auto-reconnect
+- Real-time game state telemetry via log parsing and screen capture
 - Web-based cockpit UI with live telemetry display (FastAPI + vanilla JS)
 - Voice input via Whisper STT with aviation vocabulary prompting and audio preprocessing
 - Voice output via ElevenLabs TTS with markdown sanitizer for clean speech
@@ -43,14 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dynamic token budgeting (short/normal/briefing response lengths)
 - Push-to-talk (spacebar) and barge-in interruption support
 - ChromaDB RAG store for aircraft manuals with query caching
-- Flight phase detection state machine (preflight through landed)
+- Game activity detection state machine with hysteresis
 - Health monitoring for all subsystems with graceful degradation
 - Connection quality indicator and auto-reconnect with exponential backoff
 - Delta detection to skip duplicate telemetry messages
 - 287 unit tests covering all modules
 
 ### Architecture
-- SimConnect bridge (C# .NET 8) with subscription-based data delivery
+- Game state aggregation from perception modules (log parser, vision)
 - Python orchestrator with async/await throughout
 - FastAPI web server bridging browser to all backend services
 - Docker Compose for Whisper and ChromaDB services
