@@ -470,12 +470,12 @@ class Orchestrator:
                 f"Knowledge base: "
                 f"{'available' if self._context_store.available else 'unavailable'}"
             )
-            print(f"Docs in store: {self._context_store.document_count}")
+            print(f"Docs in store: {await self._context_store.document_count()}")
             print(
                 f"Skill library: "
                 f"{'available' if self._skill_library.available else 'unavailable'}"
             )
-            print(f"Skills: {self._skill_library.skill_count}")
+            print(f"Skills: {await self._skill_library.skill_count()}")
             print(
                 f"TTS: {'enabled' if self._tts_enabled else 'disabled'}"
             )
