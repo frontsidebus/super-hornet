@@ -8,6 +8,8 @@ mono at 24000 Hz via ffmpeg subprocess.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 from collections.abc import AsyncIterator
 
@@ -91,8 +93,6 @@ class ElevenLabsTTS(TTSProvider):
 
         async with websockets.connect(ws_url) as ws:
             # Send initial config
-            import json
-
             await ws.send(
                 json.dumps(
                     {
@@ -111,12 +111,20 @@ class ElevenLabsTTS(TTSProvider):
             await ws.send(json.dumps({"text": text}))
             await ws.send(json.dumps({"text": ""}))
 
-            # Receive audio chunks
-            async for chunk in ws:
+            # Receive audio chunks (ElevenLabs sends JSON with base64 audio)
+            async for message in ws:
                 if self._cancelled:
                     break
-                if isinstance(chunk, bytes) and len(chunk) > 0:
-                    pcm = await self._decode_mp3_to_pcm(chunk)
+                if isinstance(message, str):
+                    data = json.loads(message)
+                    audio_b64 = data.get("audio")
+                    if audio_b64:
+                        mp3_chunk = base64.b64decode(audio_b64)
+                        pcm = await self._decode_mp3_to_pcm(mp3_chunk)
+                        if pcm:
+                            yield pcm
+                elif isinstance(message, bytes) and len(message) > 0:
+                    pcm = await self._decode_mp3_to_pcm(message)
                     if pcm:
                         yield pcm
 
