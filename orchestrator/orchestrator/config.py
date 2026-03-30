@@ -100,6 +100,24 @@ class Settings(BaseSettings):
         description="ElevenLabs voice ID for TTS output",
     )
 
+    # --- TTS provider --------------------------------------------------------
+    tts_provider: str = Field(
+        default="elevenlabs",
+        description="TTS backend: 'elevenlabs' or 'kokoro'",
+    )
+    kokoro_model_path: str = Field(
+        default="models/kokoro-v1.0.onnx",
+        description="Path to Kokoro ONNX model file",
+    )
+    kokoro_voices_path: str = Field(
+        default="models/voices-v1.0.bin",
+        description="Path to Kokoro voices file",
+    )
+    kokoro_voice: str = Field(
+        default="af_heart",
+        description="Kokoro voice name (e.g. af_heart, af_sarah)",
+    )
+
     # --- Screen capture (legacy, used by CaptureManager) ---------------------
     screen_capture_enabled: bool = Field(
         default=False,
