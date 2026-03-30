@@ -7,6 +7,7 @@ and plays returned PCM bytes directly via sounddevice.
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +16,12 @@ import pytest
 
 from orchestrator.tts.base import TTSProvider
 from orchestrator.voice import VoiceOutput
+
+# Create a mock sounddevice module for tests (sounddevice requires audio hardware)
+_mock_sd = MagicMock()
+_mock_sd.play = MagicMock()
+_mock_sd.wait = MagicMock()
+_mock_sd.stop = MagicMock()
 
 
 class MockTTSProvider(TTSProvider):
@@ -52,6 +59,14 @@ class MockTTSProvider(TTSProvider):
         pass
 
 
+@pytest.fixture(autouse=True)
+def _mock_sounddevice():
+    """Patch sounddevice for all tests (no audio hardware in CI)."""
+    _mock_sd.reset_mock()
+    with patch.dict(sys.modules, {"sounddevice": _mock_sd}):
+        yield _mock_sd
+
+
 class TestVoiceOutputConstructor:
     """VoiceOutput accepts TTSProvider instance, not raw API keys."""
 
@@ -81,8 +96,7 @@ class TestVoiceOutputSpeak:
     async def test_speak_calls_synthesize(
         self, voice_output: VoiceOutput, provider: MockTTSProvider
     ) -> None:
-        with patch("orchestrator.voice.sd"):
-            await voice_output.speak("Hello commander")
+        await voice_output.speak("Hello commander")
         assert "Hello commander" in provider.synthesize_calls
 
     async def test_speak_empty_text_is_noop(
@@ -92,21 +106,24 @@ class TestVoiceOutputSpeak:
         await voice_output.speak("   ")
         assert provider.synthesize_calls == []
 
-    async def test_speak_empty_bytes_no_playback(self) -> None:
+    async def test_speak_empty_bytes_no_playback(
+        self, _mock_sounddevice: MagicMock
+    ) -> None:
         provider = MockTTSProvider()
         provider.synthesize = AsyncMock(return_value=b"")
         vo = VoiceOutput(provider)
-        with patch("orchestrator.voice.sd") as mock_sd:
-            await vo.speak("test")
-        mock_sd.play.assert_not_called()
+        await vo.speak("test")
+        _mock_sounddevice.play.assert_not_called()
 
     async def test_speak_plays_pcm_via_sounddevice(
-        self, voice_output: VoiceOutput, provider: MockTTSProvider
+        self,
+        voice_output: VoiceOutput,
+        provider: MockTTSProvider,
+        _mock_sounddevice: MagicMock,
     ) -> None:
-        with patch("orchestrator.voice.sd") as mock_sd:
-            await voice_output.speak("Copy that")
-        mock_sd.play.assert_called_once()
-        mock_sd.wait.assert_called_once()
+        await voice_output.speak("Copy that")
+        _mock_sounddevice.play.assert_called_once()
+        _mock_sounddevice.wait.assert_called_once()
 
 
 class TestVoiceOutputSpeakStreamed:
@@ -120,9 +137,7 @@ class TestVoiceOutputSpeakStreamed:
             yield "Hello. "
             yield "World."
 
-        with patch("orchestrator.voice.sd"):
-            await vo.speak_streamed(text_gen())
-
+        await vo.speak_streamed(text_gen())
         assert len(provider.stream_calls) > 0
 
     async def test_streamed_respects_cancellation(self) -> None:
@@ -132,12 +147,14 @@ class TestVoiceOutputSpeakStreamed:
         async def slow_gen() -> AsyncIterator[str]:
             yield "First sentence. "
             vo.cancel()
+            # Allow the ensure_future cancel task to execute
+            await asyncio.sleep(0)
             yield "Second sentence."
 
-        with patch("orchestrator.voice.sd"):
-            await vo.speak_streamed(slow_gen())
-
-        # After cancel, should not process second sentence
+        await vo.speak_streamed(slow_gen())
+        # Allow any pending tasks to complete
+        await asyncio.sleep(0.05)
+        # After cancel, provider.cancel() should have been called
         assert provider.cancel_called
 
 
@@ -147,8 +164,7 @@ class TestVoiceOutputCancel:
     async def test_cancel_calls_provider_cancel(self) -> None:
         provider = MockTTSProvider()
         vo = VoiceOutput(provider)
-        with patch("orchestrator.voice.sd"):
-            vo.cancel()
+        vo.cancel()
         # Give the async task a chance to run
         await asyncio.sleep(0.05)
         assert provider.cancel_called
@@ -156,8 +172,7 @@ class TestVoiceOutputCancel:
     def test_cancel_sets_cancelled_flag(self) -> None:
         provider = MockTTSProvider()
         vo = VoiceOutput(provider)
-        with patch("orchestrator.voice.sd"):
-            vo.cancel()
+        vo.cancel()
         assert vo._cancelled
 
 
@@ -166,6 +181,7 @@ class TestVoiceOutputImports:
 
     def test_no_elevenlabs_import(self) -> None:
         import inspect
+
         source = inspect.getsource(VoiceOutput)
         assert "elevenlabs" not in source.lower()
         assert "xi-api-key" not in source
@@ -173,6 +189,7 @@ class TestVoiceOutputImports:
 
     def test_no_direct_backend_import_in_module(self) -> None:
         import orchestrator.voice as voice_module
+
         source_file = voice_module.__file__
         assert source_file is not None
         with open(source_file) as f:
