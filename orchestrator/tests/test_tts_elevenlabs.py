@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from orchestrator.tts.base import TTSProvider
-
 
 # Fake PCM bytes for mocked ffmpeg output
 FAKE_PCM = b"\x00\x01" * 100
@@ -105,34 +103,28 @@ class TestElevenLabsSynthesizeStream:
 
         tts = ElevenLabsTTS(api_key="test-key", voice_id="test-voice")
 
-        # Mock websockets.connect to return a mock websocket
+        # Build an async iterator for the websocket mock
+        async def _ws_aiter():
+            yield b"fake-mp3-chunk-1"
+            yield b"fake-mp3-chunk-2"
+
         mock_ws = AsyncMock()
-        # Simulate receiving binary audio chunks then a close
-        mock_ws.__aiter__ = MagicMock(
-            return_value=iter(
-                [
-                    b"fake-mp3-chunk-1",
-                    b"fake-mp3-chunk-2",
-                ]
-            )
-        )
+        mock_ws.__aiter__ = lambda self: _ws_aiter()
         mock_ws.send = AsyncMock()
+        mock_ws.__aenter__ = AsyncMock(return_value=mock_ws)
+        mock_ws.__aexit__ = AsyncMock(return_value=False)
 
         mock_ffmpeg_proc = AsyncMock()
         mock_ffmpeg_proc.communicate = AsyncMock(return_value=(FAKE_PCM, b""))
         mock_ffmpeg_proc.returncode = 0
 
         with (
-            patch("websockets.connect", return_value=mock_ws) as mock_connect,
+            patch("websockets.connect", return_value=mock_ws),
             patch(
                 "asyncio.create_subprocess_exec",
                 return_value=mock_ffmpeg_proc,
             ),
         ):
-            # Make mock_ws work as async context manager
-            mock_ws.__aenter__ = AsyncMock(return_value=mock_ws)
-            mock_ws.__aexit__ = AsyncMock(return_value=False)
-
             chunks = []
             async for chunk in tts.synthesize_stream("Hello streaming"):
                 chunks.append(chunk)
