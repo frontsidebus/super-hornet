@@ -7,6 +7,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
@@ -20,6 +21,7 @@ from .adapter_protocol import (
     parse_consumer_message,
 )
 from .config import TelemetryServiceSettings, load_settings
+from .persistence import StatePersistence
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 settings: TelemetryServiceSettings = load_settings()
 manager = AdapterManager(stale_timeout=settings.stale_adapter_timeout)
+persistence = StatePersistence(
+    path=Path(settings.state_path),
+    write_interval=settings.state_write_interval,
+)
 
 # Registration timeout (seconds). Module-level for easy test patching.
 REGISTER_TIMEOUT: float = 5.0
@@ -50,6 +56,12 @@ async def lifespan(app: FastAPI):
             await manager.cleanup_stale_adapters()
 
     cleanup_task = asyncio.create_task(_cleanup_loop())
+
+    # Restore persisted state so get_current_state works before adapters connect
+    restored = persistence.load()
+    if restored:
+        manager.set_restored_state(restored)
+        logger.info("Restored persisted telemetry state from %s", settings.state_path)
 
     yield
 
@@ -155,6 +167,7 @@ async def ws_ingest(ws: WebSocket):
 
             if msg.type == "telemetry":
                 await manager.update_telemetry(adapter_id, msg.data)
+                await persistence.save(msg.data)
             elif msg.type == "status":
                 await manager.update_adapter_status(adapter_id, msg.connected, msg.vehicle_name)
 

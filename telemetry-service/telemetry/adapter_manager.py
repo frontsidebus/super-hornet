@@ -52,6 +52,7 @@ class AdapterManager:
         self._lock = asyncio.Lock()
         self._consumer_lock = asyncio.Lock()
         self._last_broadcast_hash: str = ""
+        self._restored_state: TelemetryEnvelope | None = None
 
     # -------------------------------------------------------------------
     # Adapter management
@@ -149,15 +150,25 @@ class AdapterManager:
             )
         return result
 
+    def set_restored_state(self, envelope: TelemetryEnvelope) -> None:
+        """Set a restored state from persistence as initial fallback."""
+        self._restored_state = envelope
+
     def get_current_state(self) -> TelemetryEnvelope | None:
-        """Return the most recent telemetry from any active adapter."""
+        """Return the most recent telemetry from any active adapter.
+
+        Falls back to restored state from persistence if no active adapter
+        has sent telemetry yet.
+        """
         best: AdapterConnection | None = None
         for conn in self._adapters.values():
             if conn.last_state is None:
                 continue
             if best is None or conn.last_seen > best.last_seen:
                 best = conn
-        return best.last_state if best else None
+        if best:
+            return best.last_state
+        return self._restored_state
 
     @property
     def adapter_count(self) -> int:
