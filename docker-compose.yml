@@ -69,6 +69,33 @@ services:
       - constellation
 
   # ---------------------------------------------------------------------------
+  # Telemetry Service - Universal telemetry hub for sim adapters
+  # Receives telemetry from adapters, broadcasts to consumers via WebSocket.
+  # ---------------------------------------------------------------------------
+  telemetry:
+    build:
+      context: ./telemetry-service
+      dockerfile: Dockerfile
+    container_name: hornet-telemetry
+    ports:
+      - "3839:3839"
+    environment:
+      - TELEMETRY_HOST=0.0.0.0
+      - TELEMETRY_PORT=3839
+      - TELEMETRY_LOG_LEVEL=INFO
+      - TELEMETRY_STATE_PATH=/data/state.json
+    volumes:
+      - telemetry_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3839/api/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+    networks:
+      - constellation
+
+  # ---------------------------------------------------------------------------
   # Orchestrator - Super Hornet's brain
   # Coordinates between Claude, perception layer, Whisper, and ChromaDB.
   # ---------------------------------------------------------------------------
@@ -97,6 +124,8 @@ services:
 
 volumes:
   whisper_cache:
+    driver: local
+  telemetry_data:
     driver: local
 
 networks:
