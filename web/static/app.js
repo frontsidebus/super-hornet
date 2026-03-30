@@ -82,6 +82,7 @@
     wsBufferProcessing: false,
     thinkingMsgEl: null,            // "Super Hornet is thinking..." indicator
     _acquiringMic: false,           // mutex for async mic acquisition
+    pendingAudioFormat: null,       // format metadata for next binary TTS frame
   };
 
   // ═══════════════════════════════════════════════════════
@@ -565,12 +566,13 @@
       updateConnectionQuality();
     });
 
-    ws.binaryType = 'blob';
+    ws.binaryType = 'arraybuffer';
 
     ws.addEventListener('message', (evt) => {
       // Binary data = TTS audio chunk
-      if (evt.data instanceof Blob) {
-        queueAudioBlob(evt.data);
+      if (evt.data instanceof ArrayBuffer) {
+        queueAudioData(evt.data, state.pendingAudioFormat || {});
+        state.pendingAudioFormat = null;
         return;
       }
       // Buffer incoming messages for backpressure handling
@@ -699,7 +701,11 @@
         break;
 
       case 'tts_audio':
-        // Marker before binary audio frame — handled by binary message listener
+        // Marker before binary audio frame -- store format metadata
+        state.pendingAudioFormat = {
+          format: msg.format || 'audio/mpeg',
+          sampleRate: msg.sample_rate || 24000,
+        };
         break;
 
       case 'listening':
@@ -1469,27 +1475,48 @@
     return Math.sqrt(sumSq / (count || 1));
   }
 
-  // Accumulate small MP3 chunks before decoding to avoid boundary artifacts.
-  // Each tiny MP3 fragment has codec padding that causes pops when decoded
-  // and played individually. Merging into larger blobs eliminates this.
+  // Accumulate small PCM chunks before playing to reduce overhead.
+  // For MP3 legacy: merging avoids codec boundary artifacts.
   const _CHUNK_MERGE_DELAY_MS = 150;  // Wait this long for more chunks before playing
   let _chunkMergeTimer = null;
   let _pendingChunks = [];
+  let _pendingChunkFormat = null;
 
-  function queueAudioBlob(blob) {
-    _pendingChunks.push(blob);
+  function queueAudioData(arrayBuffer, formatInfo) {
+    _pendingChunks.push(arrayBuffer);
+    if (formatInfo && formatInfo.format) _pendingChunkFormat = formatInfo;
 
     // Debounce: wait for more chunks to arrive, then merge and play
     if (_chunkMergeTimer) clearTimeout(_chunkMergeTimer);
     _chunkMergeTimer = setTimeout(() => {
       _chunkMergeTimer = null;
-      if (_pendingChunks.length > 0) {
-        const merged = new Blob(_pendingChunks, { type: 'audio/mpeg' });
-        _pendingChunks = [];
-        state.audioQueue.push(merged);
-        if (!state.isPlayingAudio) playNextAudio();
-      }
+      _flushPendingAudio();
     }, _CHUNK_MERGE_DELAY_MS);
+  }
+
+  function _flushPendingAudio() {
+    if (_pendingChunks.length === 0) return;
+    const fmt = _pendingChunkFormat || {};
+    if (fmt.format === 'pcm_s16le') {
+      // Merge ArrayBuffers into a single buffer
+      const totalLen = _pendingChunks.reduce((s, b) => s + b.byteLength, 0);
+      const merged = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const buf of _pendingChunks) {
+        merged.set(new Uint8Array(buf), offset);
+        offset += buf.byteLength;
+      }
+      _pendingChunks = [];
+      _pendingChunkFormat = null;
+      state.audioQueue.push({ type: 'pcm', data: merged.buffer, sampleRate: fmt.sampleRate || 24000 });
+    } else {
+      // Legacy MP3 path
+      const merged = new Blob(_pendingChunks.map(b => new Uint8Array(b)), { type: 'audio/mpeg' });
+      _pendingChunks = [];
+      _pendingChunkFormat = null;
+      state.audioQueue.push({ type: 'mp3', data: merged });
+    }
+    if (!state.isPlayingAudio) playNextAudio();
   }
 
   // Force-flush any pending chunks (called when response ends)
@@ -1498,12 +1525,7 @@
       clearTimeout(_chunkMergeTimer);
       _chunkMergeTimer = null;
     }
-    if (_pendingChunks.length > 0) {
-      const merged = new Blob(_pendingChunks, { type: 'audio/mpeg' });
-      _pendingChunks = [];
-      state.audioQueue.push(merged);
-      if (!state.isPlayingAudio) playNextAudio();
-    }
+    _flushPendingAudio();
   }
 
   async function playNextAudio() {
@@ -1517,12 +1539,27 @@
     state.isPlayingAudio = true;
     setVoiceMode('speaking');
 
-    const blob = state.audioQueue.shift();
+    const item = state.audioQueue.shift();
 
     try {
       const ctx = getPlaybackContext();
-      const arrayBuf = await blob.arrayBuffer();
-      const audioBuffer = await ctx.decodeAudioData(arrayBuf);
+      let audioBuffer;
+
+      if (item.type === 'pcm') {
+        // PCM int16 LE mono -- convert to AudioBuffer
+        const sampleRate = item.sampleRate || 24000;
+        const int16 = new Int16Array(item.data);
+        const float32 = new Float32Array(int16.length);
+        for (let i = 0; i < int16.length; i++) {
+          float32[i] = int16[i] / 32768.0;
+        }
+        audioBuffer = ctx.createBuffer(1, float32.length, sampleRate);
+        audioBuffer.getChannelData(0).set(float32);
+      } else {
+        // Legacy MP3 path
+        const arrayBuf = await item.data.arrayBuffer();
+        audioBuffer = await ctx.decodeAudioData(arrayBuf);
+      }
 
       // Measure RMS of active (non-silent) audio and compute gain
       const rms = measureActiveRMS(audioBuffer);
@@ -1533,7 +1570,7 @@
       // Update the master volume from slider
       _playbackGain.gain.value = state.ttsVolume;
 
-      // Per-clip gain for normalization → feeds into compressor → master gain
+      // Per-clip gain for normalization -> feeds into compressor -> master gain
       const clipGain = ctx.createGain();
       clipGain.gain.value = clampedGain;
       clipGain.connect(_compressor);
@@ -1551,7 +1588,7 @@
 
       source.start(0);
     } catch (err) {
-      // Audio decode/playback error — skip to next queued clip
+      // Audio decode/playback error -- skip to next queued clip
       playNextAudio();
     }
   }
