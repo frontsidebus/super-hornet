@@ -28,6 +28,7 @@ from .screen_capture import CaptureManager
 from .skill_library import SkillLibrary
 from .uex_client import UEXClient
 from .vision import VisionModule, load_roi_definitions
+from .tts import create_tts_provider
 from .voice import InputMode, VoiceInput, VoiceOutput
 
 logger = logging.getLogger(__name__)
@@ -94,10 +95,16 @@ class Orchestrator:
             whisper_url=settings.whisper_url,
             mode=InputMode.PUSH_TO_TALK,
         )
-        self._voice_output = VoiceOutput(
-            api_key=settings.elevenlabs_api_key,
-            voice_id=settings.voice_id,
-        )
+
+        # TTS via pluggable provider (factory handles provider selection)
+        self._tts_enabled = False
+        try:
+            tts_provider = create_tts_provider(settings)
+            self._voice_output = VoiceOutput(tts_provider)
+            self._tts_enabled = True
+        except (ValueError, FileNotFoundError) as exc:
+            logger.warning("TTS provider init failed: %s", exc)
+            self._voice_output = None  # type: ignore[assignment]
 
         # --- Claude client (wired to all subsystems) ---
         self._claude = ClaudeClient(
@@ -115,9 +122,6 @@ class Orchestrator:
 
         self._running = False
         self._game_connected = False
-        self._tts_enabled = bool(
-            settings.elevenlabs_api_key and settings.voice_id
-        )
 
         # Health monitoring
         self._health = HealthMonitor()
