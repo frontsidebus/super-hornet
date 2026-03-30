@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -14,7 +14,7 @@ class TestKokoroTTSConstruction:
     """Constructor and property tests."""
 
     def test_is_tts_provider_subclass(self) -> None:
-        with patch("orchestrator.tts.kokoro.Kokoro") as mock_kokoro_cls:
+        with patch("orchestrator.tts.kokoro.Kokoro"):
             from orchestrator.tts.kokoro import KokoroTTS
 
             with patch("pathlib.Path.is_file", return_value=True):
@@ -47,8 +47,12 @@ class TestKokoroTTSConstruction:
             from orchestrator.tts.kokoro import KokoroTTS
 
             # model exists, voices does not
-            def _is_file_side_effect(self: object) -> bool:
-                return str(self).endswith("model.onnx")
+            call_count = 0
+
+            def _is_file_side_effect() -> bool:
+                nonlocal call_count
+                call_count += 1
+                return call_count == 1  # First call (model) returns True
 
             with (
                 patch("pathlib.Path.is_file", side_effect=_is_file_side_effect),
